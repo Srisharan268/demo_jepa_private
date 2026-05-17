@@ -42,7 +42,7 @@ meta:
   eval_freq: 100
   resume_checkpoint: null
   load_predictor: false
-  pretrain_checkpoint: pretrained_vjepa_2_1_vitg_384
+  pretrain_checkpoint: your_pretrained
   context_encoder_key: target_encoder
   target_encoder_key: target_encoder
   save_every_freq: 25

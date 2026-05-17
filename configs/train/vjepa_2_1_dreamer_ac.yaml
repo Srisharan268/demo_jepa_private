@@ -43,8 +43,8 @@ meta:
   eval_freq: 100
   resume_checkpoint: null
   load_predictor: true
-  pretrain_checkpoint: /mnt/jayyoung/codeHub/vjepa2/exp/jepa_2_1_ac_real_franka_involved/e300.pt
-  dreamer_predictor_checkpoint: /mnt/jayyoung/codeHub/vjepa2/exp/jepa_2_1_dreamer_predictor_real_retargeted/e300.pt
+  pretrain_checkpoint: your_pretrained
+  dreamer_predictor_checkpoint: your_dreamer_predictor_checkpoint
   context_encoder_key: target_encoder
   target_encoder_key: target_encoder
   save_every_freq: 25
@@ -83,4 +83,4 @@ optimization:
   weight_decay: 0.04
 wandb:
   project: vjepa_2_1_dreamer_ac
-  name: real_retargeted
+  name: test
