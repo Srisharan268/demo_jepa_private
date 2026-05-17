@@ -1,0 +1,119 @@
+# V-JEPA 2.1 vision encoder + AC predictor (app ships under app/vjepa_2_1_ac only).
+# Run: python app/main.py --fname app/vjepa_2_1_ac/droid-256px-8f.yaml
+app: vjepa_2_1_dreamer_ac
+cpus_per_task: 12
+folder: /mnt/jayyoung/codeHub/vjepa2/exp/jepa_2_1_dreamer_ac_sim_final_87
+mem_per_gpu: 220G
+nodes: 1
+tasks_per_node: 1
+data:
+  batch_size: 2
+  camera_views:
+  - right_shoulder_rgb
+  crop_size: 256
+  datasets: 
+  - /mnt/log2r/jepa_data/stage1/single_task
+  # datasets: /mnt/log2r/jepa_data/test
+  dataset_fpcs:
+  - 8
+  fps: 5
+  num_workers: 1
+  patch_size: 16
+  pin_mem: true
+  stereo_view: false
+  tubelet_size: 2
+data_aug:
+  auto_augment: false
+  horizontal_flip: false
+  motion_shift: false
+  random_resize_aspect_ratio:
+  - 0.75
+  - 1.35
+  random_resize_scale:
+  - 1.777
+  - 1.777
+  reprob: 0.0
+loss:
+  auto_steps: 2
+  loss_exp: 1.0
+  normalize_reps: true
+  reg_coeff: 0.0
+meta:
+  dtype: bfloat16
+  eval_freq: 100
+  resume_checkpoint: null
+  load_predictor: true
+  pretrain_checkpoint: /mnt/jayyoung/codeHub/vjepa2/exp/jepa_2_1_dreamer_ac_real_retargeted_real_final/e75.pt
+  diffusion_head_checkpoint: /mnt/jayyoung/codeHub/vjepa2/exp/jepa_2_1_dreamer_ac_real_imitation/e225.pt
+  dreamer_predictor_checkpoint: /mnt/jayyoung/codeHub/vjepa2/exp/jepa_2_1_dreamer_predictor_real_retargeted/e300.pt
+  context_encoder_key: target_encoder
+  target_encoder_key: target_encoder
+  save_every_freq: 25
+  seed: 239
+  use_sdpa: true
+model:
+  model_name: vit_giant_xformers
+  pred_depth: 24
+  pred_embed_dim: 1024
+  pred_is_frame_causal: true
+  pred_num_heads: 16
+  uniform_power: true
+  use_extrinsics: false
+  has_cls_first: false
+  img_temporal_dim_size: 1
+  interpolate_rope: true
+  lambda_progressive: false
+  lambda_value_img: 0.5
+  lambda_value_vid: 0.5
+  modality_embedding: true
+  n_registers: 0
+  normalize_predictor: false
+  use_activation_checkpointing: true
+  use_mask_tokens: true
+  use_rope: true
+  zero_init_mask_tokens: true
+diffusion:
+  trajectory_dim: 7
+  cond_dim: 1408
+  horizon: 1
+  n_cond_steps: 256
+  num_train_timesteps: 100
+  beta_start: 0.0001
+  beta_end: 0.02
+  beta_schedule: squaredcos_cap_v2
+  variance_type: fixed_small
+  clip_sample: false
+  prediction_type: epsilon
+  n_layer: 12
+  n_cond_layers: 8
+  n_head: 4
+  n_emb: 384
+  p_drop_emb: 0.0
+  p_drop_attn: 0.3
+  causal_attn: true
+  time_as_cond: true
+optimization:
+  anneal: 15
+  epochs: 315
+  final_lr: 0.0
+  final_weight_decay: 0.04
+  ipe: 300
+  lr: 0.000425
+  start_lr: 0.000075
+  warmup: 15
+  weight_decay: 0.04
+wandb:
+  project: vjepa_2_1_dreamer_ac
+  name: test
+deploy:
+  server_ip: 127.0.0.1
+  server_port: 9001
+
+  reference_h5: /mnt/log2r/jepa_data/aligned_retarget_data/push_button/ur/episode_0.hdf5
+  image_key: observations/images/camera_front
+  ref_data_fps: 5
+  ref_target_fps: 5
+
+  l1_threshold: 1.0
+  queue_horizon: 4
+  max_steps: -1

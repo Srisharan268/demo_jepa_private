@@ -1,0 +1,6 @@
+[submodule "Demo-JEPA"]
+	path = Demo-JEPA
+	url = https://github.com/banban3forever/Demo-JEPA.git
+[submodule "diffusion_policy"]
+	path = diffusion_policy
+	url = https://github.com/real-stanford/diffusion_policy.git
