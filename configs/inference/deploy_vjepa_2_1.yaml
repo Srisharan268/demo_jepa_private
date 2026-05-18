@@ -1,4 +1,4 @@
-folder: /mnt/jayyoung/codeHub/vjepa2/exp/deploy_tmp
+folder: your_folder
 
 meta:
   dtype: bfloat16

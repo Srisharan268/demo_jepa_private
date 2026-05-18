@@ -13,7 +13,6 @@ data:
   crop_size: 256
   datasets: 
   - your_dataset
-  # datasets: /mnt/log2r/jepa_data/test
   dataset_fpcs:
   - 8
   fps: 5
