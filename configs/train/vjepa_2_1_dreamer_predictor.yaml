@@ -2,7 +2,7 @@
 # Run: python app/main.py --fname app/vjepa_2_1_ac/droid-256px-8f.yaml
 app: vjepa_2_1_dreamer_predictor
 cpus_per_task: 12
-folder: ./exp/your_exp_foler
+folder: your_folder
 mem_per_gpu: 220G
 nodes: 1
 tasks_per_node: 8
@@ -11,7 +11,7 @@ data:
   camera_views:
   - camera_front
   crop_size: 256
-  dataset: /mnt/log2r/jepa_data/aligned_retarget_data
+  dataset: your_dataset
   dataset_fpcs:
   - 8
   num_workers: 8
