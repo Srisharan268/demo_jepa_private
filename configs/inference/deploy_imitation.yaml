@@ -2,7 +2,7 @@
 # Run: python app/main.py --fname app/vjepa_2_1_ac/droid-256px-8f.yaml
 app: vjepa_2_1_dreamer_ac
 cpus_per_task: 12
-folder: /mnt/jayyoung/codeHub/vjepa2/exp/jepa_2_1_dreamer_ac_sim_final_87
+folder:  your_folder
 mem_per_gpu: 220G
 nodes: 1
 tasks_per_node: 1
@@ -12,7 +12,7 @@ data:
   - right_shoulder_rgb
   crop_size: 256
   datasets: 
-  - /mnt/log2r/jepa_data/stage1/single_task
+  - your_dataset
   # datasets: /mnt/log2r/jepa_data/test
   dataset_fpcs:
   - 8
@@ -43,9 +43,9 @@ meta:
   eval_freq: 100
   resume_checkpoint: null
   load_predictor: true
-  pretrain_checkpoint: /mnt/jayyoung/codeHub/vjepa2/exp/jepa_2_1_dreamer_ac_real_retargeted_real_final/e75.pt
-  diffusion_head_checkpoint: /mnt/jayyoung/codeHub/vjepa2/exp/jepa_2_1_dreamer_ac_real_imitation/e225.pt
-  dreamer_predictor_checkpoint: /mnt/jayyoung/codeHub/vjepa2/exp/jepa_2_1_dreamer_predictor_real_retargeted/e300.pt
+  pretrain_checkpoint: your_checkpoint
+  diffusion_head_checkpoint: your_checkpoint
+  dreamer_predictor_checkpoint: your_checkpoint
   context_encoder_key: target_encoder
   target_encoder_key: target_encoder
   save_every_freq: 25
@@ -109,7 +109,7 @@ deploy:
   server_ip: 127.0.0.1
   server_port: 9001
 
-  reference_h5: /mnt/log2r/jepa_data/aligned_retarget_data/push_button/ur/episode_0.hdf5
+  reference_h5: your_reference_h5
   image_key: observations/images/camera_front
   ref_data_fps: 5
   ref_target_fps: 5
