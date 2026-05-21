@@ -1,7 +1,7 @@
 # Demo-JEPA: Joint-Embedding Predictive Architecture for One-shot Cross-Embodiment Imitation
 
 [[Project page]](https://log2r.github.io/Demo-JEPA/)
-Paper
+[[Paper]](https://arxiv.org/abs/2605.20811)
 
 <img src="assets/pipeline.png" alt="drawing" width="100%"/>
 
