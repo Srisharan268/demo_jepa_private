@@ -33,3 +33,4 @@ wandb/
 
 # Temp config written by server/run_eval_stage1.sh
 configs/train/_eval_stage1.yaml
+.smoketest/

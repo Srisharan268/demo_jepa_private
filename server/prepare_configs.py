@@ -27,10 +27,18 @@ no code change at all.
 
 Usage:  python server/prepare_configs.py
 """
+import argparse
 import os
 import sys
 
 import yaml
+
+_ap = argparse.ArgumentParser(description="Write stage 1/2 training configs.")
+_ap.add_argument("--gpus", type=int, default=4, help="GPUs in the run (world size)")
+_ap.add_argument("--epochs", type=int, default=None, help="override epochs for both stages")
+_ap.add_argument("--smoke", action="store_true",
+                 help="tiny plumbing run: batch 1, accum 1, epochs 1, ipe 20")
+ARGS = _ap.parse_args()
 
 # ----------------------------------------------------------------------------
 # EDIT THESE
@@ -49,7 +57,19 @@ STAGE0_CKPT = os.path.expanduser("~/vjepa2_ac_repacked.pt")
 
 CAMERA = "right_shoulder_rgb"
 NUM_WORKERS = 8          # per rank; 4 ranks => 32 loader processes. Lower if host RAM is tight.
-N_GPUS = 4
+
+# Number of GPUs actually available. Override with --gpus N.
+# NOTE: this drives the arithmetic here AND the --devices list the run scripts
+# use (via DJEPA_DEVICES, printed at the end). Changing it alone is not enough
+# if you launch the scripts by hand.
+N_GPUS = int(os.environ.get("DJEPA_GPUS", "4"))
+for _i, _a in enumerate(sys.argv):
+    if _a == "--gpus" and _i + 1 < len(sys.argv):
+        N_GPUS = int(sys.argv[_i + 1])
+
+# Paper global batches, preserved wherever possible.
+PAPER_GLOBAL_S1 = 128    # 16 x 8 GPUs
+PAPER_GLOBAL_S2 = 16     # 2 x 8 GPUs
 
 # Stage 1's output, consumed by Stage 2. Written by the Stage 1 run.
 STAGE1_CKPT = os.path.join(OUT_STAGE1, "latest.pt")
@@ -133,9 +153,18 @@ c["folder"] = OUT_STAGE1
 c["data"]["dataset"] = DATASET
 c["data"]["camera_views"] = [CAMERA]
 c["data"]["data_type"] = "sim"
-c["data"]["batch_size"] = 8
-c["data"]["num_workers"] = NUM_WORKERS
-c["optimization"]["accum_steps"] = 4
+# batch_size 8 is the memory ceiling per GPU (measured ~1.0-1.9 GB/sample of
+# activations). Accumulation makes up the rest of the paper's global batch.
+S1_BATCH = 1 if ARGS.smoke else 8
+S1_ACCUM = 1 if ARGS.smoke else max(1, PAPER_GLOBAL_S1 // (S1_BATCH * N_GPUS))
+c["data"]["batch_size"] = S1_BATCH
+c["data"]["num_workers"] = 2 if ARGS.smoke else NUM_WORKERS
+c["optimization"]["accum_steps"] = S1_ACCUM
+if ARGS.smoke:
+    # Plumbing only: 20 optimizer steps, no LR schedule to speak of.
+    c["optimization"].update(epochs=1, ipe=20, warmup=0, anneal=0)
+elif ARGS.epochs:
+    c["optimization"]["epochs"] = ARGS.epochs
 c["meta"]["pretrain_checkpoint"] = STAGE0_CKPT
 c["meta"]["dreamer_predictor_checkpoint"] = None
 save(S1, c)
@@ -150,8 +179,18 @@ d["folder"] = OUT_STAGE2
 d["data"]["dataset"] = DATASET
 d["data"]["camera_views"] = [CAMERA]
 d["data"]["data_type"] = "sim"
-d["data"]["batch_size"] = 4          # 4 x 4 GPUs = 16 = paper's global batch
-d["data"]["num_workers"] = NUM_WORKERS
+# Stage 2 has NO accumulation support (app/vjepa_2_1_dreamer_ac/train.py is
+# untouched), so global batch is batch_size x N_GPUS. On few GPUs the batch
+# needed to hit 16 may not fit; cap it and report the shortfall honestly.
+S2_BATCH_IDEAL = max(1, PAPER_GLOBAL_S2 // N_GPUS)
+S2_BATCH_CAP = 4                      # per-GPU memory ceiling for stage 2
+S2_BATCH = 1 if ARGS.smoke else min(S2_BATCH_IDEAL, S2_BATCH_CAP)
+d["data"]["batch_size"] = S2_BATCH
+d["data"]["num_workers"] = 2 if ARGS.smoke else NUM_WORKERS
+if ARGS.smoke:
+    d["optimization"].update(epochs=1, ipe=20, warmup=0, anneal=0)
+elif ARGS.epochs:
+    d["optimization"]["epochs"] = ARGS.epochs
 # Stage 2 needs no accumulation, so app/vjepa_2_1_dreamer_ac/train.py is untouched.
 d["meta"]["pretrain_checkpoint"] = STAGE0_CKPT
 d["meta"]["dreamer_predictor_checkpoint"] = STAGE1_CKPT
@@ -159,7 +198,7 @@ d["meta"]["load_predictor"] = True
 save(S2, d)
 
 print("configs written\n")
-report("stage 1", load(S1), 4)
+report("stage 1", load(S1), load(S1)["optimization"].get("accum_steps", 1))
 report("stage 2", load(S2), 1)
 print("\nUnchanged from upstream: model, crop_size, dataset_fpcs, epochs, ipe,")
 print("lr, start_lr, final_lr, warmup, anneal, weight_decay, loss settings.")
