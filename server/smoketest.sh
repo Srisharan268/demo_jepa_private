@@ -111,8 +111,44 @@ EOF
 p_preflight() {
     nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv || return 1
     echo "--- host ---"; free -g | head -2; df -h "$REPO" | tail -1; echo "cores: $(nproc)"
-    echo "--- python ---"; python -c "import sys,torch; print(sys.version.split()[0], 'torch', torch.__version__, 'cuda', torch.cuda.is_available())"
-    python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" || { echo "ERROR: CUDA unavailable"; return 1; }
+    echo "--- python ---"
+    python - <<'PY'
+import sys, os, re, subprocess, torch
+print("interpreter :", sys.executable)
+print("python      :", sys.version.split()[0])
+print("torch       :", torch.__version__, "| built for CUDA", torch.version.cuda)
+env = os.environ.get("CONDA_DEFAULT_ENV", "(none)")
+print("conda env   :", env)
+if env in ("(none)", "base"):
+    print("WARNING: running in conda base. Expected a dedicated env (e.g. 'djepa').")
+
+if torch.cuda.is_available():
+    print("cuda        : OK ->", torch.cuda.get_device_name(0))
+    sys.exit(0)
+
+# Diagnose the usual cause rather than just reporting failure.
+print("\nERROR: torch cannot see the GPU.")
+try:
+    out = subprocess.run(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+                         capture_output=True, text=True).stdout.strip()
+    print("driver      :", out)
+except Exception:
+    out = ""
+built = torch.version.cuda or "?"
+print(f"""
+Most likely: torch is built for CUDA {built} but the driver supports an older
+runtime. A driver upgrade needs root; installing a matching torch does not.
+
+Find your driver's max CUDA under 'CUDA Version' in plain `nvidia-smi`, then:
+
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cuXXX
+
+where cuXXX is that version without the dot (12.8 -> cu128). An OLDER cuXXX than
+the driver supports is fine; a newer one is not. Install torch BEFORE `pip install .`
+so the repo's `torch>=2` requirement does not pull the default wheel back in.
+""")
+sys.exit(1)
+PY
 }
 
 p_imports() {
