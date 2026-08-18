@@ -105,21 +105,34 @@ conda create -n djepa python=3.12 -y && conda activate djepa
 ```
 
 ```bash
-cd ~/Demo-JEPA && pip install . && pip install diffusers==0.11.1
+cd ~/Demo-JEPA && pip install .
 ```
 
-**✓ check:** both finish without a resolver error.
+**✓ check:** finishes without a resolver error.
 
-## 5. Fix the diffusers import
+> The main README also tells you to `pip install diffusers==0.11.1` and then
+> hand-edit `dynamic_modules_utils.py` to remove a `cached_download` import.
+> **Skip both.** `diffusers` is imported in exactly one file —
+> `app/vjepa_2_1_imitation/diffusion_head.py` — which belongs to the imitation
+> baseline you are not running. It is not in `requirements.txt` either, so
+> `pip install .` will not pull it.
 
-Open `$CONDA_PREFIX/lib/python3.12/site-packages/diffusers/dynamic_modules_utils.py`
-and delete the line importing `cached_download` from `huggingface_hub`.
+## 5. Verify the install
 
 ```bash
-python -c "import torch, diffusers, timm, einops, h5py, decord; print('imports OK', torch.__version__, torch.cuda.is_available())"
+python -c "import torch, timm, einops, h5py, decord, transformers; print('imports OK', torch.__version__, 'cuda:', torch.cuda.is_available())"
 ```
 
-**✓ check:** prints `imports OK <version> True`. `False` means torch can't see the GPUs — stop.
+**✓ check:** prints `imports OK <version> cuda: True`. `False` means torch cannot
+see the GPUs — stop and fix that before going further.
+
+```bash
+python -c "import app.vjepa_2_1_dreamer_predictor.train, app.vjepa_2_1_dreamer_ac.train; print('stage 1 + 2 modules import OK')"
+```
+
+**✓ check:** prints the confirmation. This is the real test — it exercises the
+actual training modules, including the gradient-accumulation change, rather than
+just third-party packages.
 
 ## 6. Get the Stage 0 checkpoint
 
