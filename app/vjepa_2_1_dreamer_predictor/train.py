@@ -20,6 +20,7 @@ import gc
 import random
 import time
 import wandb
+from contextlib import nullcontext
 from copy import deepcopy
 
 import numpy as np
@@ -128,6 +129,9 @@ def main(args, resume_preempt=False):
     cfgs_opt = args.get("optimization")
     ipe = cfgs_opt.get("ipe", None)
     ipe_scale = cfgs_opt.get("ipe_scale", 1.0)
+    # Number of micro-batches accumulated per optimizer step. Effective batch is
+    # batch_size * world_size * accum_steps. Default 1 == upstream behaviour.
+    accum_steps = int(cfgs_opt.get("accum_steps", 1))
     wd = float(cfgs_opt.get("weight_decay"))
     final_wd = float(cfgs_opt.get("final_weight_decay"))
     num_epochs = cfgs_opt.get("epochs")
@@ -374,33 +378,40 @@ def main(args, resume_preempt=False):
         for itr in range(ipe):
             itr_start_time = time.time()
 
-            iter_retries = 0
-            iter_successful = False
-            while not iter_successful:
-                try:
-                    sample = next(loader)
-                    iter_successful = True
-                except StopIteration:
-                    logger.info("Exhausted data loaders. Refreshing...")
-                    unsupervised_sampler.set_epoch(epoch)
-                    loader = iter(unsupervised_loader)
-                except Exception as e:
-                    NUM_RETRIES = 5
-                    if iter_retries < NUM_RETRIES:
-                        logger.warning(f"Encountered exception when loading data (num retries {iter_retries}):\n{e}")
-                        iter_retries += 1
-                        time.sleep(5)
-                    else:
-                        logger.warning(f"Exceeded max retries ({NUM_RETRIES}) when loading data. Skipping batch.")
-                        raise e
+            # -- collect `accum_steps` micro-batches; one optimizer step consumes all of them
+            micro_batches = []
+            for _ in range(accum_steps):
+                iter_retries = 0
+                iter_successful = False
+                while not iter_successful:
+                    try:
+                        sample = next(loader)
+                        iter_successful = True
+                    except StopIteration:
+                        logger.info("Exhausted data loaders. Refreshing...")
+                        unsupervised_sampler.set_epoch(epoch)
+                        loader = iter(unsupervised_loader)
+                    except Exception as e:
+                        NUM_RETRIES = 5
+                        if iter_retries < NUM_RETRIES:
+                            logger.warning(
+                                f"Encountered exception when loading data (num retries {iter_retries}):\n{e}"
+                            )
+                            iter_retries += 1
+                            time.sleep(5)
+                        else:
+                            logger.warning(f"Exceeded max retries ({NUM_RETRIES}) when loading data. Skipping batch.")
+                            raise e
 
-
-
-            current_frame, target_frame, current_reference, target_reference = sample
-            current_frame = current_frame.to(device, dtype=dtype)
-            target_frame = target_frame.to(device, dtype=dtype)
-            current_reference = current_reference.to(device, dtype=dtype)
-            target_reference = target_reference.to(device, dtype=dtype)
+                current_frame, target_frame, current_reference, target_reference = sample
+                micro_batches.append(
+                    (
+                        current_frame.to(device, dtype=dtype),
+                        target_frame.to(device, dtype=dtype),
+                        current_reference.to(device, dtype=dtype),
+                        target_reference.to(device, dtype=dtype),
+                    )
+                )
             data_elapsed_time_ms = (time.time() - itr_start_time) * 1000.0
 
             if sync_gc and (itr + 1) % GARBAGE_COLLECT_ITR_FREQ == 0:
@@ -432,25 +443,43 @@ def main(args, resume_preempt=False):
                     #loss = loss.mean()
                     return loss
 
-                # Step 1. Forward
-                with torch.cuda.amp.autocast(dtype=dtype, enabled=mixed_precision):
-                    if unfreeze_vit:
-                        target_feature = forward_feature(target_encoder, target_frame)
-                    else:
-                        target_feature = forward_feature(encoder, target_frame)
-                    current_feature = forward_feature(encoder, current_frame)
-                    current_reference_feature = forward_feature(encoder, current_reference)
-                    target_reference_feature = forward_feature(encoder, target_reference)
-                    dreamer_output = forward_dreamer(current_feature, current_reference_feature, target_reference_feature)
-                    loss = loss_fn(dreamer_output, target_feature)
+                # Step 1+2. Forward/backward over each micro-batch. Gradients accumulate
+                # into .grad; the optimizer steps once below, so the effective batch is
+                # batch_size * world_size * accum_steps.
+                optimizer.zero_grad()
+                n_micro = len(micro_batches)
+                micro_losses = []
+                for _i, (current_frame, target_frame, current_reference, target_reference) in enumerate(micro_batches):
+                    # Suppress DDP's all-reduce until the final micro-batch: syncing on
+                    # every one is correct but wastes n_micro-1 collectives per step.
+                    _sync = nullcontext() if _i == n_micro - 1 else dreamer_predictor.no_sync()
+                    with _sync:
+                        with torch.cuda.amp.autocast(dtype=dtype, enabled=mixed_precision):
+                            if unfreeze_vit:
+                                target_feature = forward_feature(target_encoder, target_frame)
+                            else:
+                                target_feature = forward_feature(encoder, target_frame)
+                            current_feature = forward_feature(encoder, current_frame)
+                            current_reference_feature = forward_feature(encoder, current_reference)
+                            target_reference_feature = forward_feature(encoder, target_reference)
+                            dreamer_output = forward_dreamer(current_feature, current_reference_feature, target_reference_feature)
+                            # Divide so the accumulated gradient equals the gradient of the
+                            # mean loss over the full effective batch.
+                            loss = loss_fn(dreamer_output, target_feature) / n_micro
 
-                # Step 2. Backward & step
+                        if mixed_precision:
+                            scaler.scale(loss).backward()
+                        else:
+                            loss.backward()
+                    micro_losses.append(float(loss) * n_micro)
+
+                # Report the unscaled mean loss, matching upstream's logged scale.
+                loss = sum(micro_losses) / n_micro
+
+                # Unscale once, on the fully-accumulated gradient
                 if mixed_precision:
-                    scaler.scale(loss).backward()
                     scaler.unscale_(optimizer)
-                else:
-                    loss.backward()
-                
+
                 # Gradient clipping for training stability
                 # clip_grad_norm_ returns the original (unclipped) gradient norm
                 max_grad_norm = 1.0

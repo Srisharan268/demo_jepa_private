@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.ipynb_checkpoints/
+
+# Model weights / checkpoints — never in git.
+# GitHub hard-rejects single files over 100MB; these run 2-6GB each.
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Datasets (RLBench / aloha hdf5)
+*.hdf5
+*.h5
+
+# Training + eval outputs
+exp/
+out/
+out_stage2/
+rollouts/
+deploy_out/
+wandb/
+*.log
+*.csv
+
+# Generated media
+*.gif
+*.mp4
+
+# Temp config written by server/run_eval_stage1.sh
+configs/train/_eval_stage1.yaml
