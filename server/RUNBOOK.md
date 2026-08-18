@@ -301,21 +301,43 @@ then exits cleanly. If this fails, the problem is the model or checkpoints — n
 ## 15. Build the simulator environment
 
 Separate env: Python 3.10 with `pyrep` + `rlbench` + CoppeliaSim and **no torch**.
-Follow the RLBench install guide, including its headless-rendering section.
+It talks to `deploy.py` only over `localhost:9001`, so the two dependency stacks
+never interact.
 
 ```bash
-conda create -n rlbench python=3.10 -y && conda activate rlbench
+bash server/install_sim_env.sh
 ```
 
-Install PyRep, RLBench, and CoppeliaSim per the RLBench guide, then:
+**✓ check:** ends with `sim env OK` and prints two values. **Paste them into the
+top of `server/run_rollout.py`** — `PY_SIM` and `COPPELIASIM_ROOT` are the only
+real placeholders left in the repo.
+
+The script does system libs (needs `sudo`), the `libffi7` backport, CoppeliaSim
+4.1, the three env vars, then PyRep and RLBench from source. If you have no sudo
+on the lab machine, run `bash server/install_sim_env.sh --skip-apt` and send the
+package list to your admin.
+
+> **The two things that go wrong here:**
+> - **`libffi7`.** CoppeliaSim 4.1 links `libffi.so.7`; Ubuntu 22.04+ ships
+>   libffi8. Without the backported `.deb` CoppeliaSim exits immediately with an
+>   error that never mentions libffi. The reference Colab run needed exactly this.
+> - **The three env vars.** `COPPELIASIM_ROOT`, `LD_LIBRARY_PATH`, and
+>   `QT_QPA_PLATFORM_PLUGIN_PATH` are read by PyRep at **build** time as well as
+>   run time. If PyRep is pip-installed before they are exported, it compiles
+>   against nothing and fails at import. The script appends them to `~/.bashrc`.
+
+Confirm CoppeliaSim itself starts headless before trusting the whole stack:
 
 ```bash
-python -c "import pyrep, rlbench; print('sim env OK')" && echo "PY_SIM=$(which python)" && echo "COPPELIASIM_ROOT=$COPPELIASIM_ROOT"
+Xvfb :99 -screen 0 1400x900x24 -ac -noreset > /dev/null 2>&1 &
 ```
 
-**✓ check:** prints `sim env OK` followed by the two paths. **Copy those two
-values into the top of `server/run_rollout.py`** — they are the only real
-placeholders left in the repo.
+```bash
+DISPLAY=:99 $COPPELIASIM_ROOT/coppeliaSim.sh -h -q & sleep 15; pkill -f coppeliaSim && echo "CoppeliaSim headless OK"
+```
+
+**✓ check:** prints `CoppeliaSim headless OK`. A crash here is a graphics/library
+problem, not an RLBench one — much easier to diagnose now than mid-rollout.
 
 ## 16. Check Xvfb
 
