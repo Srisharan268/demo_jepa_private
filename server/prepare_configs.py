@@ -37,10 +37,15 @@ import yaml
 # ----------------------------------------------------------------------------
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-DATASET = "/path/to/rlbench/pairs"              # collected RLBench pairs
-STAGE0_CKPT = "/path/to/vjepa2_ac_repacked.pt"  # Meta V-JEPA 2.1-AC, repacked
-OUT_STAGE1 = "/path/to/exp/stage1"
-OUT_STAGE2 = "/path/to/exp/stage2"
+# Repo-relative, so the same config works on laptop and server with no edits.
+# Produced by: python server/split_dataset.py
+DATASET = os.path.join(REPO, "data", "train")
+HELD_OUT = os.path.join(REPO, "data", "val")     # used by eval + deploy, not training
+OUT_STAGE1 = os.path.join(REPO, "exp", "stage1")  # exp/ is gitignored
+OUT_STAGE2 = os.path.join(REPO, "exp", "stage2")
+
+# Not in the repo -- downloaded on the server (see RUNBOOK step 6).
+STAGE0_CKPT = os.path.expanduser("~/vjepa2_ac_repacked.pt")
 
 CAMERA = "right_shoulder_rgb"
 NUM_WORKERS = 8          # per rank; 4 ranks => 32 loader processes. Lower if host RAM is tight.
