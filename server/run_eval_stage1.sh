@@ -7,7 +7,7 @@
 # so report the batch size alongside the number.
 #
 # Usage:
-#   bash server/run_eval_stage1.sh /path/to/held_out_data [checkpoint]
+#   bash server/run_eval_stage1.sh data/val [checkpoint]
 #
 # Defaults to the stage 1 config's own dreamer_predictor output if no
 # checkpoint is given.
@@ -16,7 +16,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 
-VAL_DATA="${1:?usage: run_eval_stage1.sh <held_out_data_dir> [checkpoint]}"
+VAL_DATA="${1:-data/val}"
 CKPT="${2:-}"
 
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"

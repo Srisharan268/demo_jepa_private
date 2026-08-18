@@ -257,7 +257,7 @@ python server/optional_mask_size.py
 ## 11. Stage 1 eval — retrieval accuracy
 
 ```bash
-bash server/run_eval_stage1.sh /path/to/held_out_data
+bash server/run_eval_stage1.sh data/val
 ```
 
 **✓ check:** prints `acc@1` well above chance. The script prints chance for you
@@ -267,7 +267,7 @@ Predictor didn't learn — investigate before spending time on rollouts.
 ## 12. Build the deploy checkpoint
 
 ```bash
-python server/make_deploy_ckpt.py /path/to/exp/stage2/latest.pt ~/stage2_deploy.pt
+python server/make_deploy_ckpt.py exp/stage2/latest.pt exp/stage2_deploy.pt
 ```
 
 **✓ check:** prints the written size (~5–6GB). Errors here mean stage 2's
@@ -275,16 +275,16 @@ checkpoint lacks `target_encoder` or `predictor`.
 
 ## 13. Write the deploy config
 
-Edit paths at the top of `server/prepare_deploy_config.py` — `DEPLOY_CKPT`,
-`STAGE1_CKPT`, `REFERENCE_H5` (one held-out **sawyer** episode: the one-shot
-prompt), `OUT_FOLDER`. Then:
+Nothing to edit — paths are repo-relative and the one-shot reference demo is
+auto-selected from the held-out split.
 
 ```bash
 python server/prepare_deploy_config.py
 ```
 
-**✓ check:** all three paths `[ok]`, and mpc reads
-`samples: 200, cem_steps: 50, topk: 10` — the paper's values.
+**✓ check:** all three paths `[ok]`, the reference resolves to a file under
+`data/val/<task>/sawyer/`, and mpc reads `samples: 200, cem_steps: 50, topk: 10`
+— the paper's values.
 
 ## 14. Validate CEM without the simulator
 
@@ -307,19 +307,30 @@ Follow the RLBench install guide, including its headless-rendering section.
 conda create -n rlbench python=3.10 -y && conda activate rlbench
 ```
 
+Install PyRep, RLBench, and CoppeliaSim per the RLBench guide, then:
+
 ```bash
-/opt/conda/envs/rlbench/bin/python -c "import pyrep, rlbench; print('sim env OK')"
+python -c "import pyrep, rlbench; print('sim env OK')" && echo "PY_SIM=$(which python)" && echo "COPPELIASIM_ROOT=$COPPELIASIM_ROOT"
 ```
 
-**✓ check:** prints `sim env OK`. Then set `PY_SIM` and `COPPELIASIM_ROOT` at the
-top of `server/run_rollout.py` to match.
+**✓ check:** prints `sim env OK` followed by the two paths. **Copy those two
+values into the top of `server/run_rollout.py`** — they are the only real
+placeholders left in the repo.
 
 ## 16. Check Xvfb
 
 CoppeliaSim needs a display even headless.
 
 ```bash
-which Xvfb && Xvfb :99 -screen 0 1400x900x24 -ac & sleep 3 && DISPLAY=:99 xdpyinfo | head -3
+which Xvfb || echo "MISSING - install xvfb"
+```
+
+```bash
+Xvfb :99 -screen 0 1400x900x24 -ac -noreset > /dev/null 2>&1 &
+```
+
+```bash
+sleep 3 && DISPLAY=:99 xdpyinfo | head -3
 ```
 
 **✓ check:** `xdpyinfo` prints display info rather than "unable to open display".
@@ -347,11 +358,15 @@ per environment step.
 ## 18. Make the video
 
 ```bash
-python server/make_video.py --frames rollouts/ep0 --reference /path/to/held_out/push_button/sawyer/episode0.hdf5
+python server/make_video.py --frames rollouts/ep0 --reference data/val/push_button/sawyer/variation0_0000.hdf5
 ```
 
 **✓ check:** writes `rollouts/ep0.gif`. Left panel is the sawyer reference demo,
-right is the panda execution. Add `--mp4` for video.
+right is the Franka execution. Add `--mp4` for video.
+
+> Naming: the dataset directory is `franka/` while `server.py --robot` expects
+> `panda`. Same arm — Franka Emika Panda — two naming conventions. Do not
+> "fix" either one.
 
 ---
 
@@ -360,7 +375,7 @@ right is the panda execution. Add `--mp4` for video.
 1. **4 GPUs instead of 8**, compensated by gradient accumulation — global batch
    is 128 (stage 1) and 16 (stage 2), matching the paper.
 2. **Stage 0 not trained**; started from released V-JEPA 2.1-AC weights.
-3. **`float16` instead of `bfloat16`** — only if step 1 showed V100s.
+3. **`float16` instead of `bfloat16`** — only if step 2 showed V100s.
 
 Everything else — model, resolution, epochs, LR schedule, losses, MPC settings —
 is upstream.

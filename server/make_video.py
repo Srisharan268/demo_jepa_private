@@ -12,7 +12,7 @@ timeline rather than truncated.
 
 Usage:
   python server/make_video.py --frames rollouts/ep0 \\
-      --reference /path/to/held_out/<task>/sawyer/episode0.hdf5 \\
+      --reference data/val/push_button/sawyer/variation0_0000.hdf5 \\
       --out rollouts/ep0.gif
 """
 import argparse

@@ -8,7 +8,7 @@ Stage 2 writes a much larger dict that also carries the optimizer state.
 Loads with mmap=True so the multi-GB file is never fully materialised.
 
 Usage:
-  python server/make_deploy_ckpt.py /path/to/stage2/latest.pt /path/to/deploy.pt
+  python server/make_deploy_ckpt.py exp/stage2/latest.pt exp/stage2_deploy.pt
 """
 import os
 import sys

@@ -32,11 +32,15 @@ behaviour to upstream unless a config sets it.
    nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
    ```
 
-2. **Edit the paths** at the top of `server/prepare_configs.py` — dataset,
-   Stage 0 checkpoint, output folders.
+2. **Extract and split the dataset.** The archive ships in the repo.
 
-3. **Write the configs.** Asserts upstream values first, so it fails loudly if
-   the repo drifted.
+   ```bash
+   cd data && tar -xzf rlbench_data.tar.gz && cd .. && python server/split_dataset.py
+   ```
+
+3. **Write the configs.** Paths are repo-relative — nothing to edit unless the
+   Stage 0 checkpoint is somewhere other than `~/vjepa2_ac_repacked.pt`. Asserts
+   upstream values first, so it fails loudly if the repo drifted.
 
    ```bash
    python server/prepare_configs.py
@@ -74,7 +78,7 @@ Uses the paper's own `app/vjepa_2_1_dreamer_predictor/retrieval_eval.py`. Report
 acc@1 / acc@k on **held-out** episodes; chance is `1/batch_size`.
 
 ```bash
-bash server/run_eval_stage1.sh /path/to/held_out_data
+bash server/run_eval_stage1.sh data/val
 ```
 
 ### Stage 2 — closed-loop success rate
@@ -85,10 +89,10 @@ a single reference demonstration of a *different* embodiment.
 1. Extract a deploy checkpoint from stage 2's output:
 
    ```bash
-   python server/make_deploy_ckpt.py /path/to/exp/stage2/latest.pt /path/to/stage2_deploy.pt
+   python server/make_deploy_ckpt.py exp/stage2/latest.pt exp/stage2_deploy.pt
    ```
 
-2. Edit the paths in `server/prepare_deploy_config.py`, then:
+2. Write the deploy config (paths are repo-relative, reference auto-selected):
 
    ```bash
    python server/prepare_deploy_config.py
@@ -114,7 +118,7 @@ a single reference demonstration of a *different* embodiment.
 `server.py --save_image_dir`, which `run_rollout.py` sets per episode. Then:
 
 ```bash
-python server/make_video.py --frames rollouts/ep0 --reference /path/to/held_out/push_button/sawyer/episode0.hdf5
+python server/make_video.py --frames rollouts/ep0 --reference data/val/push_button/sawyer/variation0_0000.hdf5
 ```
 
 Produces a side-by-side: reference demo (source embodiment) on the left, policy
