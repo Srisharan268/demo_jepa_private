@@ -32,16 +32,34 @@ git checkout -b server-4gpu
 git add .gitignore app/vjepa_2_1_dreamer_predictor/train.py server/ && git commit -m "Gradient accumulation for stage 1; server run scripts and runbook"
 ```
 
+Create the repo at <https://github.com/new> — **Private**, and leave "Add a
+README", "Add .gitignore", and "Choose a license" **unchecked**. An initialized
+repo creates a commit your branch does not share, and the push is rejected as
+non-fast-forward.
+
 ```bash
-gh repo create your-name/demo-jepa-lab --private --source=. --remote=lab --push
+git remote add lab https://github.com/Srisharan268/demo_jepa_private.git
 ```
 
-**✓ check:** the last command prints your repo URL, and the repo shows a
-`server/` folder with 11 files.
+```bash
+git push -u lab server-4gpu
+```
 
-> GitHub's Fork button cannot make a public repo private — that is why this
-> creates a fresh private repo rather than forking. `origin` still points at
-> upstream, so `git fetch origin` continues to work for checking drift.
+**✓ check:** prints `* [new branch] server-4gpu -> server-4gpu`, and the repo
+page shows a `server/` folder with 11 files.
+
+> Notes:
+> - `gh` CLI is not required; the web UI plus plain git is enough. If a remote
+>   named `lab` already exists, use `git remote set-url lab <url>` rather than
+>   `add`.
+> - "Repository not found" on a **private** repo means *either* a wrong name
+>   *or* failed auth — GitHub returns 404 instead of 403. If the page loads in
+>   your browser, it is auth: create a token at
+>   <https://github.com/settings/tokens> with `repo` scope and use it as the
+>   password.
+> - GitHub's Fork button cannot make a public repo private — that is why this
+>   creates a fresh private repo rather than forking. `origin` still points at
+>   upstream, so `git fetch origin` continues to work for checking drift.
 
 You are done with your laptop. Everything below runs on the server.
 
@@ -70,8 +88,11 @@ free -g && df -h ~ && nproc
 **✓ check:** ≥64GB RAM free, ≥200GB disk. Note the RAM figure — if under ~64GB,
 lower `NUM_WORKERS` in step 8 and expect to need `optional_mask_size.py` at stage 2.
 
+The work is on the `server-4gpu` branch, so clone that explicitly rather than
+relying on whatever GitHub picked as the default:
+
 ```bash
-git clone https://github.com/your-name/demo-jepa-lab.git ~/Demo-JEPA
+git clone -b server-4gpu https://github.com/Srisharan268/demo_jepa_private.git ~/Demo-JEPA
 ```
 
 **✓ check:** `ls ~/Demo-JEPA/server/` shows 11 files. **From here on, every
