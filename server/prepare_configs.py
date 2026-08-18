@@ -156,7 +156,10 @@ c["data"]["data_type"] = "sim"
 # batch_size 8 is the memory ceiling per GPU (measured ~1.0-1.9 GB/sample of
 # activations). Accumulation makes up the rest of the paper's global batch.
 S1_BATCH = 1 if ARGS.smoke else 8
-S1_ACCUM = 1 if ARGS.smoke else max(1, PAPER_GLOBAL_S1 // (S1_BATCH * N_GPUS))
+# Smoke uses accum 2, not 1: with n_micro == 1 the accumulation loop runs once,
+# no_sync() is never entered and the /n_micro scaling is a no-op -- the whole
+# custom code path would go untested. 2 exercises it for ~nothing.
+S1_ACCUM = 2 if ARGS.smoke else max(1, PAPER_GLOBAL_S1 // (S1_BATCH * N_GPUS))
 c["data"]["batch_size"] = S1_BATCH
 c["data"]["num_workers"] = 2 if ARGS.smoke else NUM_WORKERS
 c["optimization"]["accum_steps"] = S1_ACCUM
