@@ -28,21 +28,37 @@ export WANDB_MODE="${WANDB_MODE:-disabled}"
 EVAL_CFG="configs/train/_eval_stage1.yaml"
 
 python - "$VAL_DATA" "$CKPT" "$EVAL_CFG" <<'PY'
-import sys, yaml
+import os, sys, yaml
 val, ckpt, out = sys.argv[1], sys.argv[2], sys.argv[3]
+
+# The dataset yields one sample per episode PAIR and the loader uses
+# drop_last=True, so a batch_size above the episode count gives len(loader)==0
+# and the eval hangs on StopIteration instead of erroring. Size to fit.
+pairs = 0
+for task in os.listdir(val):
+    d = os.path.join(val, task, "franka")
+    if os.path.isdir(d):
+        pairs += len([f for f in os.listdir(d) if f.endswith((".hdf5", ".h5"))])
+if pairs < 2:
+    sys.exit(f"ERROR: {val} has {pairs} episode pairs; need >= 2 to score retrieval.")
+batch = min(16, pairs)   # larger batch = harder test, chance = 1/batch
+
 c = yaml.safe_load(open("configs/train/vjepa_2_1_dreamer_predictor.yaml"))
 c["data"]["dataset"] = val
-# Eval only -- no accumulation, and a larger batch makes acc@1 a harder,
-# more informative test (chance = 1/batch_size).
-c["data"]["batch_size"] = 16
-c["optimization"]["accum_steps"] = 1
+c["data"]["batch_size"] = batch
+c["data"]["num_workers"] = 2
+c["optimization"]["accum_steps"] = 1     # eval only
 if ckpt:
     c["meta"]["dreamer_predictor_checkpoint"] = ckpt
 yaml.safe_dump(c, open(out, "w"), sort_keys=False)
+
 print(f"eval config  -> {out}")
-print(f"  dataset    : {val}")
-print(f"  dreamer    : {c['meta']['dreamer_predictor_checkpoint']}")
-print(f"  batch/chance: {c['data']['batch_size']} / {1/c['data']['batch_size']:.3f}")
+print(f"  dataset     : {val}  ({pairs} episode pairs)")
+print(f"  dreamer     : {c['meta']['dreamer_predictor_checkpoint']}")
+print(f"  batch/chance: {batch} / {1/batch:.3f}")
+if pairs < 16:
+    print(f"  NOTE: only {pairs} pairs, so chance is {1/batch:.3f}. A small held-out")
+    print(f"        set makes acc@1 easy and noisy -- treat it as a smoke test.")
 PY
 
 exec python -m app.vjepa_2_1_dreamer_predictor.retrieval_eval \

@@ -55,6 +55,8 @@ N_GPUS = 4
 STAGE1_CKPT = os.path.join(OUT_STAGE1, "latest.pt")
 # ----------------------------------------------------------------------------
 
+FATAL = []
+
 S1 = "configs/train/vjepa_2_1_dreamer_predictor.yaml"
 S2 = "configs/train/vjepa_2_1_dreamer_ac.yaml"
 
@@ -80,6 +82,18 @@ def expect(cfg, path, want, rel):
                  f"Upstream changed -- re-check the memory analysis before proceeding.")
 
 
+def count_pairs(root):
+    """Dataset __len__ is the number of paired EPISODES, not frames."""
+    if not os.path.isdir(root):
+        return None
+    n = 0
+    for task in os.listdir(root):
+        d = os.path.join(root, task, "franka")
+        if os.path.isdir(d):
+            n += len([f for f in os.listdir(d) if f.endswith((".hdf5", ".h5"))])
+    return n
+
+
 def report(tag, cfg, accum):
     d = cfg["data"]
     g = d["batch_size"] * N_GPUS * accum
@@ -89,6 +103,24 @@ def report(tag, cfg, accum):
                      ("pretrain_checkpoint", cfg["meta"]["pretrain_checkpoint"])):
         mark = "ok " if val and os.path.exists(str(val)) else "MISSING"
         print(f"      {key:22s} {val}  [{mark}]")
+
+    # The dataloader uses drop_last=True and the dataset yields ONE sample per
+    # episode pair. If batch_size exceeds what each rank receives, len(loader)
+    # is 0 and training loops forever on StopIteration -- a silent hang, not an
+    # error. Catch it here instead.
+    pairs = count_pairs(d["dataset"])
+    if pairs is None:
+        return
+    per_rank = pairs // N_GPUS
+    batches = per_rank // d["batch_size"]
+    print(f"      {'episode pairs':22s} {pairs}  ->  {per_rank}/rank  ->  "
+          f"{batches} batches/rank/epoch")
+    if batches == 0:
+        max_bs = max(per_rank, 1)
+        print(f"      *** FATAL: batch_size {d['batch_size']} > {per_rank} samples per rank.")
+        print(f"          len(loader)==0 with drop_last=True; training will HANG silently.")
+        print(f"          Need >= {d['batch_size'] * N_GPUS} episode pairs, or batch_size <= {max_bs}.")
+        FATAL.append(tag)
 
 
 # ---------------------------------------------------------------- Stage 1 ---
@@ -131,3 +163,17 @@ report("stage 1", load(S1), 4)
 report("stage 2", load(S2), 1)
 print("\nUnchanged from upstream: model, crop_size, dataset_fpcs, epochs, ipe,")
 print("lr, start_lr, final_lr, warmup, anneal, weight_decay, loss settings.")
+
+if FATAL:
+    print("\n" + "=" * 72)
+    print(f"REFUSING TO PROCEED: {', '.join(FATAL)} would hang (see FATAL above).")
+    print("The configs were written, but do NOT launch training with them.")
+    print("")
+    print("Fix by either:")
+    print("  (a) collecting more episodes -- the real fix; or")
+    print("  (b) for a pipeline smoke test only, lowering batch_size in the")
+    print("      config(s) to at most the per-rank sample count shown above.")
+    print("      Note this also means memory is NOT validated at the batch size")
+    print("      you will eventually train with.")
+    print("=" * 72)
+    sys.exit(1)
