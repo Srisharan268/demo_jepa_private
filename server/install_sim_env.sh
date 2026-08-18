@@ -110,20 +110,27 @@ eval "$(conda shell.bash hook)"
 conda env list | grep -q "^$SIM_ENV " || conda create -n "$SIM_ENV" python=3.10 -y
 conda activate "$SIM_ENV"
 
+# Versions below are read directly out of the known-good Colab environment
+# (rlbench_env.tar.gz), so this build matches what already ran end to end.
 pip install -q --upgrade pip
-pip install -q numpy cffi
+pip install -q "numpy==2.2.6" "cffi==1.14.2"
 
 echo
-echo "=== 6. PyRep ==="
+echo "=== 6. PyRep 4.1.0.3 ==="
 # Built against COPPELIASIM_ROOT, so the exports above must be set first.
-pip install -q git+https://github.com/stepjam/PyRep.git
+# 4.1.0.3 is the release that targets CoppeliaSim 4.1 -- do not float this.
+pip install -q "git+https://github.com/stepjam/PyRep.git@v4.1.0.3" \
+    || pip install -q git+https://github.com/stepjam/PyRep.git
 
 echo
-echo "=== 7. RLBench ==="
-pip install -q git+https://github.com/stepjam/RLBench.git
+echo "=== 7. RLBench 1.2.0 ==="
+pip install -q "git+https://github.com/stepjam/RLBench.git@1.2.0" \
+    || pip install -q git+https://github.com/stepjam/RLBench.git
 
-# The server also needs these for the socket protocol and image saving.
-pip install -q h5py pillow scipy
+# Also present in the working env; server.py needs these for the socket
+# protocol, image saving, and pose maths.
+pip install -q "h5py==3.16.0" "pillow==12.3.0" "scipy==1.15.3" \
+    "pyquaternion==0.9.9" "natsort==8.4.0" "gymnasium==1.3.0" "cloudpickle==3.1.2"
 
 # ------------------------------------------------------------ 8. verify ---
 echo

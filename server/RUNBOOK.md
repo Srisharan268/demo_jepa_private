@@ -304,18 +304,44 @@ Separate env: Python 3.10 with `pyrep` + `rlbench` + CoppeliaSim and **no torch*
 It talks to `deploy.py` only over `localhost:9001`, so the two dependency stacks
 never interact.
 
+### Option A — restore the prebuilt env (try this first)
+
+`rlbench_env.tar.gz` (558MB) is the exact environment that already ran end to
+end. Too big for git, so put it on Drive and pull it to the server:
+
+```bash
+pip install gdown && gdown "<drive-file-id>" -O ~/rlbench_env.tar.gz
+```
+
+```bash
+bash server/use_prebuilt_sim.sh ~/rlbench_env.tar.gz
+```
+
+Minutes instead of an hour, and no compilation. It extracts to `~/simenv`
+rather than `/` — the archive stores absolute paths (`opt/conda/envs/rlbench`,
+`content/CoppeliaSim`), and extracting at root would need sudo and could
+clobber the server's own conda.
+
+Works only if the host is Ubuntu 20.04+/glibc ≥ 2.31; the script checks and
+tells you. You may still need the apt packages from Option B.
+
+### Option B — build from source
+
 ```bash
 bash server/install_sim_env.sh
 ```
 
-**✓ check:** ends with `sim env OK` and prints two values. **Paste them into the
-top of `server/run_rollout.py`** — `PY_SIM` and `COPPELIASIM_ROOT` are the only
-real placeholders left in the repo.
+System libs (needs `sudo`), the `libffi7` backport, CoppeliaSim 4.1, the three
+env vars, then PyRep and RLBench — **pinned to the versions read out of the
+working tarball**: PyRep 4.1.0.3, RLBench 1.2.0, Python 3.10, numpy 2.2.6,
+cffi 1.14.2, scipy 1.15.3, h5py 3.16.0, pyquaternion 0.9.9.
 
-The script does system libs (needs `sudo`), the `libffi7` backport, CoppeliaSim
-4.1, the three env vars, then PyRep and RLBench from source. If you have no sudo
-on the lab machine, run `bash server/install_sim_env.sh --skip-apt` and send the
-package list to your admin.
+No sudo? Run `bash server/install_sim_env.sh --skip-apt` and send the package
+list to your admin.
+
+**✓ check (either option):** ends with `sim env OK` and prints two values.
+**Paste them into the top of `server/run_rollout.py`** — `PY_SIM` and
+`COPPELIASIM_ROOT` are the only real placeholders left in the repo.
 
 > **The two things that go wrong here:**
 > - **`libffi7`.** CoppeliaSim 4.1 links `libffi.so.7`; Ubuntu 22.04+ ships
