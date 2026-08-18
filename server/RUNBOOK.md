@@ -150,42 +150,37 @@ won't match and stage 1 will fail at load.
 
 ## 7. Get the dataset in place
 
-Your RLBench pairs must be on the server in aloha hdf5 layout, split into a
-**training set** and a **held-out set** — Section 2 needs the held-out set for
-both the retrieval eval and the one-shot reference demo.
-
-The datasets are NOT in the git repo (`.gitignore` excludes `*.hdf5`), so pick
-whichever source applies:
-
-**(a) Already on Google Drive** — pull straight to the server, skipping your laptop:
+The dataset archive ships **inside the repo** (`data/rlbench_data.tar.gz`, 38MB),
+so the clone already brought it. Extract and split:
 
 ```bash
-pip install gdown && gdown --folder "<drive-folder-url>" -O ~/data
+cd ~/Demo-JEPA/data && tar -xzf rlbench_data.tar.gz && cd ..
 ```
-
-**(b) On a local disk** — one rsync from your laptop. It resumes if interrupted:
 
 ```bash
-rsync -avP /path/on/laptop/ you@server:~/data/
+python server/split_dataset.py
 ```
 
-**(c) Not collected yet** — generate on the server. This is synthetic data and
-`--seed_master` makes it reproducible, so generating here is equivalent to
-copying. **But it needs the simulator environment first**, so do Section 2
-steps 15–16 before this, then use the collection command from the main
-[README.md](../README.md) with `--headless`.
+**✓ check:** prints `push_button   train 12   held-out 6`, creating `data/train`
+and `data/val`. Both keep the `<task>/<robot>/` layout the dataloader expects.
+The split is seeded (`random.Random(0)`), so it is identical on every machine.
 
-```bash
-ls ~/data && du -sh ~/data
-```
+Extracted `.hdf5` files are gitignored — only the archive is versioned, and the
+split is reproducible from it.
 
-**✓ check:** per-task directories containing `panda/` and `sawyer/` subdirs with
-`.hdf5` files, and a separate held-out directory.
+> **This is a smoke-test dataset, not a training set.** 18 episode pairs of one
+> task, 93 frames each. The configs run 94,500 optimizer steps at global batch
+> 128 — thousands of passes over ~1,700 frames. Use it to prove the pipeline
+> works end to end, then collect properly (the main [README.md](../README.md)
+> uses `--total_episodes 200`) before any run you intend to report. Collecting
+> needs the simulator env, so do Section 2 steps 15–16 first.
 
 ## 8. Write the training configs
 
-Edit the paths at the top of `server/prepare_configs.py` — `DATASET`,
-`STAGE0_CKPT`, `OUT_STAGE1`, `OUT_STAGE2`. Then:
+Paths are repo-relative, so there is normally **nothing to edit** — `DATASET`
+resolves to `data/train`, outputs to `exp/stage1` and `exp/stage2`. The only
+absolute path is `STAGE0_CKPT` (`~/vjepa2_ac_repacked.pt` from step 6); change
+it only if you put the checkpoint elsewhere.
 
 ```bash
 python server/prepare_configs.py
