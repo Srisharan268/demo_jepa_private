@@ -137,16 +137,36 @@ just third-party packages.
 ## 6. Get the Stage 0 checkpoint
 
 Download it **on the server**, not via your laptop — it is a public file and the
-lab's bandwidth will beat your home upload. Then strip the optimizer state
-(~11GB → ~2–3GB):
+lab's bandwidth will beat your home upload. The URL comes from the repo's own
+`src/hub/backbones.py` (`VJEPA_BASE_URL` + `vit_ac_giant` → `vjepa2-ac-vitg`),
+and `vit_giant_xformers` matches the `model_name` in both training configs.
 
 ```bash
-python -c "import torch,sys; ck=torch.load(sys.argv[1],map_location='cpu',mmap=True); torch.save({k:ck[k] for k in ('target_encoder','predictor') if k in ck}, sys.argv[2]); print('keys:', sorted(ck.keys()))" /path/to/vjepa2_ac.pt ~/vjepa2_ac_repacked.pt
+cd ~ && wget --show-progress https://dl.fbaipublicfiles.com/vjepa2/vjepa2-ac-vitg.pt
 ```
 
-**✓ check:** printed keys include `target_encoder` and `predictor`; the repacked
-file is ~2–3GB. If either key is missing, the config's `target_encoder_key`
-won't match and stage 1 will fail at load.
+**✓ check:** ~11GB downloaded.
+
+Then repack — this drops the optimizer state, aliases `target_encoder`, and
+renames keys for DDP:
+
+```bash
+cd ~/Demo-JEPA && python server/repack_stage0.py ~/vjepa2-ac-vitg.pt ~/vjepa2_ac_repacked.pt
+```
+
+**✓ check:** prints `top-level keys: ['encoder', 'predictor', ...]`, nonzero
+tensor counts, and a `sample key` beginning with `module.`. That prefix is the
+one that matters — the training scripts wrap models in DDP, and without it the
+state dict loads "successfully" while binding nothing, giving you a loss that
+never moves rather than an error.
+
+> The raw file has **no `target_encoder`** — only `encoder` and `predictor`. The
+> script aliases it, since both `context_encoder_key` and `target_encoder_key`
+> resolve to `target_encoder` in the configs.
+>
+> Dtype is preserved by default. The Colab run cast to bf16 to fit in ~12.7GB of
+> RAM; you do not need that on a real node, and preserving fp32 keeps the
+> initial predictor weights at full precision. Pass `--bf16` only if RAM is tight.
 
 ## 7. Get the dataset in place
 
