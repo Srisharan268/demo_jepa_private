@@ -166,7 +166,11 @@ p_dataset() {
 p_stage0_download() {
     local f="$HOME/vjepa2-ac-vitg.pt"
     if [ -s "$f" ]; then echo "already present: $f ($(du -h "$f" | cut -f1))"; return 0; fi
-    wget --show-progress -O "$f" https://dl.fbaipublicfiles.com/vjepa2/vjepa2-ac-vitg.pt
+    # --show-progress renders a bar only on a TTY; piped through tee it degrades
+    # to one dot-line per 50KB (~220k lines for 11GB). dot:giga = 32MB/line.
+    # -c resumes a partial file instead of restarting the whole download.
+    wget -c --progress=dot:giga -O "$f" https://dl.fbaipublicfiles.com/vjepa2/vjepa2-ac-vitg.pt
+    echo "downloaded: $(du -h "$f" | cut -f1)"
 }
 
 p_stage0_repack() {
