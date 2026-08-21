@@ -37,6 +37,25 @@ mkdir -p "$PREFIX"
 echo "=== extracting (~558MB, a few minutes) ==="
 tar -xzf "$TARBALL" -C "$PREFIX"
 
+# The archive also stores ABSOLUTE SYMLINK TARGETS, not just absolute paths.
+# e.g. libcoppeliaSim.so.1 -> /content/CoppeliaSim/libcoppeliaSim.so, which
+# dangles once relocated, and pyrep then fails with
+#   ImportError: libcoppeliaSim.so.1: cannot open shared object file
+# Rewrite every broken link whose target starts with a known Colab prefix.
+# Safe to re-run: only -xtype l (broken links) are touched.
+echo "=== relocating absolute symlinks ==="
+_fixed=0
+while IFS= read -r l; do
+    t="$(readlink "$l")"
+    case "$t" in
+        /content/*|/opt/conda/*)
+            ln -sfn "$PREFIX$t" "$l" && _fixed=$((_fixed + 1)) ;;
+        *)
+            echo "  WARNING: broken link with unexpected target: $l -> $t" >&2 ;;
+    esac
+done < <(find "$PREFIX" -xtype l 2>/dev/null)
+echo "  relocated $_fixed symlink(s); $(find "$PREFIX" -xtype l 2>/dev/null | wc -l) still broken"
+
 SIM_ROOT="$PREFIX/content/CoppeliaSim"
 SIM_PY="$PREFIX/opt/conda/envs/rlbench/bin/python"
 
@@ -81,10 +100,13 @@ else
     echo
     echo "FAILED to import from the relocated env." >&2
     echo "Most likely causes, in order:" >&2
-    echo "  1. Missing system libs -- run: bash server/install_sim_env.sh --skip-apt" >&2
+    echo "  1. A dangling symlink the relocation pass above did not cover." >&2
+    echo "     Check:  find $PREFIX -xtype l -printf '%p -> %l\\n'" >&2
+    echo "     'libcoppeliaSim.so.1: cannot open shared object file' is this." >&2
+    echo "  2. Missing system libs -- run: bash server/install_sim_env.sh --skip-apt" >&2
     echo "     (or just the apt section of it) to pull in the X11/mesa packages." >&2
-    echo "  2. libffi7 absent. CoppeliaSim 4.1 links libffi.so.7; 22.04+ ships libffi8." >&2
-    echo "  3. glibc too old on this host." >&2
+    echo "  3. libffi7 absent. CoppeliaSim 4.1 links libffi.so.7; 22.04+ ships libffi8." >&2
+    echo "  4. glibc too old on this host." >&2
     echo "If none apply, fall back to: bash server/install_sim_env.sh" >&2
     exit 1
 fi
