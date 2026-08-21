@@ -134,8 +134,20 @@ def run_episode(ep, args):
     n_frames = len([f for f in os.listdir(frames_dir) if f.lower().endswith((".png", ".jpg"))])
 
     if proc.returncode != 0:
-        tail = "\n".join(proc.stdout.splitlines()[-15:])
-        print(f"  deploy.py exited {proc.returncode}:\n{tail}", flush=True)
+        # stderr matters most: Python tracebacks go there, not to stdout, so
+        # printing only stdout showed model-init logging and hid the exception.
+        err_log = os.path.join(args.out, f"deploy_ep{ep}.log")
+        with open(err_log, "w", errors="replace") as f:
+            f.write("===== STDOUT =====\n" + (proc.stdout or "")
+                    + "\n===== STDERR =====\n" + (proc.stderr or ""))
+        err = "\n".join((proc.stderr or "").splitlines()[-25:])
+        out = "\n".join((proc.stdout or "").splitlines()[-8:])
+        print(f"  deploy.py exited {proc.returncode}", flush=True)
+        if err.strip():
+            print(f"  --- stderr (last 25) ---\n{err}", flush=True)
+        else:
+            print(f"  --- stdout (last 8, stderr empty) ---\n{out}", flush=True)
+        print(f"  full output: {err_log}", flush=True)
 
     return success, n_frames
 
