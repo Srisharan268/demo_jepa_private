@@ -191,12 +191,20 @@ def patch_stage2(check):
     return "stage 2: patched (3x bf16, mask 64, GradScaler bypassed)"
 
 
-DEPLOY_CASTS = (
+# Placement matters. Casting after all four models exist does NOTHING for the
+# OOM, because the crash happens *during* construction of the fourth: with the
+# first three still fp32 that is already 9.32GB. Each model must be cast as it
+# is created, and the encoder must be cast BEFORE copy.deepcopy so the copy
+# inherits bf16 rather than duplicating 4.05GB.
+#
+# Peak with correct placement:
+#   encoder 2.03 + predictor 0.61 + target 2.03 + dreamer 1.70 (fp32, cast
+#   immediately after) = 6.37GB peak, settling to 5.51GB.
+DEPLOY_ENC_CAST = (
     "    encoder = encoder.to(dtype=torch.bfloat16)\n"
-    "    target_encoder = target_encoder.to(dtype=torch.bfloat16)\n"
     "    predictor = predictor.to(dtype=torch.bfloat16)\n"
-    "    dreamer_predictor = dreamer_predictor.to(dtype=torch.bfloat16)\n"
 )
+DEPLOY_DRM_CAST = "    dreamer_predictor = dreamer_predictor.to(dtype=torch.bfloat16)\n"
 
 
 def patch_deploy(check):
@@ -215,7 +223,7 @@ def patch_deploy(check):
     """
     s = read(DEPLOY)
     have_mask = "max_num_frames=64," in s
-    have_casts = "dreamer_predictor = dreamer_predictor.to(dtype=torch.bfloat16)" in s
+    have_casts = (DEPLOY_ENC_CAST in s) and (DEPLOY_DRM_CAST in s)
     if have_mask and have_casts:
         return "deploy: already patched"
     if check:
@@ -232,12 +240,17 @@ def patch_deploy(check):
         s = s.replace(old, "        max_num_frames=64,", 1)
 
     if not have_casts:
-        # Anchor after all four models exist, before the optional compile step.
-        a = ("    if compile_model:\n"
-             '        logger.info("Compiling encoder, predictor, target_encoder, '
-             'and dreamer_predictor.")')
-        need(s, a, "compile_model block", DEPLOY)
-        s = s.replace(a, DEPLOY_CASTS + a, 1)
+        # 1. encoder + predictor, BEFORE the deepcopy so target_encoder is bf16 too.
+        a1 = "    target_encoder = copy.deepcopy(encoder)\n"
+        need(s, a1, "target_encoder deepcopy", DEPLOY)
+        s = s.replace(a1, DEPLOY_ENC_CAST + a1, 1)
+
+        # 2. the dreamer, immediately after its own construction.
+        a2 = ("    if compile_model:\n"
+              '        logger.info("Compiling encoder, predictor, target_encoder, '
+              'and dreamer_predictor.")')
+        need(s, a2, "compile_model block", DEPLOY)
+        s = s.replace(a2, DEPLOY_DRM_CAST + a2, 1)
 
     write(DEPLOY, s)
     return "deploy: patched (mask 64, 4x bf16)"
