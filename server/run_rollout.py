@@ -54,6 +54,9 @@ def torch_env():
     e["PYTHONPATH"] = REPO + (":" + e["PYTHONPATH"] if e.get("PYTHONPATH") else "")
     e["PYTHONUNBUFFERED"] = "1"
     e.setdefault("WANDB_MODE", "disabled")
+    # Deploy allocates four large models back to back; expandable segments
+    # avoids losing a few hundred MB to fragmentation between them.
+    e.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     return e
 
 

@@ -191,16 +191,56 @@ def patch_stage2(check):
     return "stage 2: patched (3x bf16, mask 64, GradScaler bypassed)"
 
 
+DEPLOY_CASTS = (
+    "    encoder = encoder.to(dtype=torch.bfloat16)\n"
+    "    target_encoder = target_encoder.to(dtype=torch.bfloat16)\n"
+    "    predictor = predictor.to(dtype=torch.bfloat16)\n"
+    "    dreamer_predictor = dreamer_predictor.to(dtype=torch.bfloat16)\n"
+)
+
+
 def patch_deploy(check):
+    """mask 64 + cast all four models to bf16.
+
+    deploy holds FOUR large models at once -- note target_encoder is a full
+    copy.deepcopy(encoder) at deploy.py:428, not a reference:
+
+        encoder 4.05 + target_encoder 4.05 + predictor 1.22 + dreamer 1.70
+        = 11.02 GB fp32, vs 5.51 GB bf16
+
+    Unlike the stage 1/2 casts this is NOT a training deviation -- deploy is
+    inference only, so there are no optimizer moments and no fp32 master
+    weights to lose. bf16 here costs some numerical precision in the CEM
+    rollouts and nothing else.
+    """
     s = read(DEPLOY)
-    if "max_num_frames=64," in s:
+    have_mask = "max_num_frames=64," in s
+    have_casts = "dreamer_predictor = dreamer_predictor.to(dtype=torch.bfloat16)" in s
+    if have_mask and have_casts:
         return "deploy: already patched"
     if check:
-        return "deploy: NOT patched"
-    old = "        max_num_frames=512,"
-    need(s, old, "max_num_frames=512", DEPLOY)
-    write(DEPLOY, s.replace(old, "        max_num_frames=64,", 1))
-    return "deploy: patched (mask 64)"
+        missing = []
+        if not have_mask:
+            missing.append("mask 512")
+        if not have_casts:
+            missing.append("models fp32")
+        return f"deploy: NOT patched ({', '.join(missing)})"
+
+    if not have_mask:
+        old = "        max_num_frames=512,"
+        need(s, old, "max_num_frames=512", DEPLOY)
+        s = s.replace(old, "        max_num_frames=64,", 1)
+
+    if not have_casts:
+        # Anchor after all four models exist, before the optional compile step.
+        a = ("    if compile_model:\n"
+             '        logger.info("Compiling encoder, predictor, target_encoder, '
+             'and dreamer_predictor.")')
+        need(s, a, "compile_model block", DEPLOY)
+        s = s.replace(a, DEPLOY_CASTS + a, 1)
+
+    write(DEPLOY, s)
+    return "deploy: patched (mask 64, 4x bf16)"
 
 
 def main():
