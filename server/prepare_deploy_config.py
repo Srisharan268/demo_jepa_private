@@ -19,6 +19,7 @@ Usage:
 import argparse
 import glob
 import os
+import subprocess
 import sys
 
 import yaml
@@ -63,7 +64,17 @@ def main():
     task, reference_h5 = pick_reference(args.task, args.camera)
 
     path = os.path.join(REPO, CFG)
-    c = yaml.safe_load(open(path))
+    # Read the UPSTREAM config from git HEAD, not the working tree. This script
+    # overwrites the same file it reads, so reading the working tree makes it
+    # non-idempotent: a second run sees the first run's output and the MPC guard
+    # below fires against our own values -- or worse, against a deliberate
+    # local MPC reduction, reporting it as "upstream changed".
+    blob = subprocess.run(["git", "show", f"HEAD:{CFG}"],
+                          cwd=REPO, capture_output=True, text=True)
+    if blob.returncode != 0:
+        sys.exit(f"ERROR: cannot read {CFG} from git HEAD:\n{blob.stderr.strip()}\n"
+                 f"Are you inside the repo, and is {CFG} committed?")
+    c = yaml.safe_load(blob.stdout)
 
     # Guard: these are the paper's MPC values. If upstream differs, stop and look.
     mpc = c["deploy"]["mpc"]

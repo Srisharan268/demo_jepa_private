@@ -113,7 +113,17 @@ def run_episode(ep, args):
         print(f"  ERROR: server never opened :{PORT}. See {server_log}", flush=True)
         return False, 0
 
-    print("  running policy (CEM: 200 samples x 50 steps per env step -- slow)", flush=True)
+    # Report the MPC settings actually in the config, not a hardcoded guess --
+    # a stale literal here makes a reduced-compute run look like a paper run.
+    try:
+        import yaml
+        _m = yaml.safe_load(open(os.path.join(REPO, DEPLOY_CFG)))["deploy"]["mpc"]
+        _s, _c = _m.get("samples"), _m.get("cem_steps")
+        _note = "" if (_s, _c) == (200, 50) else "  *** REDUCED, not reportable ***"
+        print(f"  running policy (CEM: {_s} samples x {_c} steps per env step){_note}",
+              flush=True)
+    except Exception as _e:
+        print(f"  running policy (could not read mpc from {DEPLOY_CFG}: {_e})", flush=True)
     proc = subprocess.run(
         [sys.executable, "-m", "app.vjepa_2_1_dreamer_ac.deploy", "--fname", DEPLOY_CFG],
         cwd=REPO, env=torch_env(), capture_output=True, text=True,
