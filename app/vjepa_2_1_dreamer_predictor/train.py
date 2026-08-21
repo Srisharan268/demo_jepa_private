@@ -20,7 +20,6 @@ import gc
 import random
 import time
 import wandb
-from contextlib import nullcontext
 from copy import deepcopy
 
 import numpy as np
@@ -449,29 +448,35 @@ def main(args, resume_preempt=False):
                 optimizer.zero_grad()
                 n_micro = len(micro_batches)
                 micro_losses = []
-                for _i, (current_frame, target_frame, current_reference, target_reference) in enumerate(micro_batches):
-                    # Suppress DDP's all-reduce until the final micro-batch: syncing on
-                    # every one is correct but wastes n_micro-1 collectives per step.
-                    _sync = nullcontext() if _i == n_micro - 1 else dreamer_predictor.no_sync()
-                    with _sync:
-                        with torch.cuda.amp.autocast(dtype=dtype, enabled=mixed_precision):
-                            if unfreeze_vit:
-                                target_feature = forward_feature(target_encoder, target_frame)
-                            else:
-                                target_feature = forward_feature(encoder, target_frame)
-                            current_feature = forward_feature(encoder, current_frame)
-                            current_reference_feature = forward_feature(encoder, current_reference)
-                            target_reference_feature = forward_feature(encoder, target_reference)
-                            dreamer_output = forward_dreamer(current_feature, current_reference_feature, target_reference_feature)
-                            # Divide so the accumulated gradient equals the gradient of the
-                            # mean loss over the full effective batch.
-                            loss = loss_fn(dreamer_output, target_feature) / n_micro
-
-                        if mixed_precision:
-                            scaler.scale(loss).backward()
+                # NOTE: no no_sync() here. dreamer_predictor is wrapped with
+                # static_graph=True (see the DDP wrap above), which PyTorch
+                # documents as incompatible with no_sync() -- no_sync() skips
+                # prepare_for_backward while the static graph assumes it ran,
+                # tripping `expect_autograd_hooks_ INTERNAL ASSERT FAILED`.
+                # Syncing every micro-batch is mathematically identical: DDP
+                # averages each micro-gradient across ranks and they accumulate
+                # into .grad, and averaging is linear, so
+                # avg(g1) + avg(g2) == avg(g1 + g2). The only cost is n_micro-1
+                # redundant all-reduces per step -- exactly zero on one GPU.
+                for current_frame, target_frame, current_reference, target_reference in micro_batches:
+                    with torch.cuda.amp.autocast(dtype=dtype, enabled=mixed_precision):
+                        if unfreeze_vit:
+                            target_feature = forward_feature(target_encoder, target_frame)
                         else:
-                            loss.backward()
-                    micro_losses.append(float(loss) * n_micro)
+                            target_feature = forward_feature(encoder, target_frame)
+                        current_feature = forward_feature(encoder, current_frame)
+                        current_reference_feature = forward_feature(encoder, current_reference)
+                        target_reference_feature = forward_feature(encoder, target_reference)
+                        dreamer_output = forward_dreamer(current_feature, current_reference_feature, target_reference_feature)
+                        # Divide so the accumulated gradient equals the gradient of the
+                        # mean loss over the full effective batch.
+                        loss = loss_fn(dreamer_output, target_feature) / n_micro
+
+                    if mixed_precision:
+                        scaler.scale(loss).backward()
+                    else:
+                        loss.backward()
+                    micro_losses.append(loss.detach().item() * n_micro)
 
                 # Report the unscaled mean loss, matching upstream's logged scale.
                 loss = sum(micro_losses) / n_micro
