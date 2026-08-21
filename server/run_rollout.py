@@ -20,7 +20,6 @@ import argparse
 import os
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import time
@@ -72,14 +71,31 @@ def ensure_xvfb():
     return "started"
 
 
-def wait_for_port(port, timeout=180):
-    """Poll instead of sleeping a fixed interval -- CoppeliaSim startup varies a lot."""
+SERVER_READY_MARKER = "waiting for client connection"
+
+
+def wait_for_server(server_log, proc, timeout=180):
+    """Wait for server.py by watching its log, NOT by connecting to the port.
+
+    A TCP probe cannot be used here: server.py accepts exactly ONE client. A
+    connect_ex() readiness check is accepted as that client, and when the probe
+    closes the socket the server proceeds through `initial reset...` and dies
+    with BrokenPipeError trying to send its init reply -- after which the real
+    client gets ConnectionRefusedError. The probe consumed the accept().
+
+    Watching the log also catches the server exiting during startup, which a
+    port probe silently waits out until timeout.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(1.0)
-            if s.connect_ex(("127.0.0.1", port)) == 0:
-                return True
+        if proc.poll() is not None:
+            return False              # server died before becoming ready
+        try:
+            with open(server_log, errors="replace") as f:
+                if SERVER_READY_MARKER in f.read():
+                    return True
+        except FileNotFoundError:
+            pass
         time.sleep(2)
     return False
 
@@ -111,9 +127,11 @@ def run_episode(ep, args):
                                env=sim_env(), stdout=log, stderr=subprocess.STDOUT)
 
     print(f"  simulator starting (CoppeliaSim, up to {args.timeout}s)...", flush=True)
-    if not wait_for_port(PORT, timeout=args.timeout):
+    if not wait_for_server(server_log, srv, timeout=args.timeout):
+        why = ("server exited during startup" if srv.poll() is not None
+               else f"server never became ready within {args.timeout}s")
         srv.terminate()
-        print(f"  ERROR: server never opened :{PORT}. See {server_log}", flush=True)
+        print(f"  ERROR: {why}. See {server_log}", flush=True)
         return False, 0
 
     # Report the MPC settings actually in the config, not a hardcoded guess --
