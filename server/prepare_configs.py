@@ -29,6 +29,7 @@ Usage:  python server/prepare_configs.py
 """
 import argparse
 import os
+import subprocess
 import sys
 
 import yaml
@@ -82,8 +83,22 @@ S2 = "configs/train/vjepa_2_1_dreamer_ac.yaml"
 
 
 def load(rel):
-    with open(os.path.join(REPO, rel)) as f:
-        return yaml.safe_load(f)
+    """Load the UPSTREAM config from git HEAD, not the working tree.
+
+    This script overwrites the same files it reads, so reading the working
+    tree makes it non-idempotent: a second run sees the first run's output
+    and the expect() guards fire against our own values. Reading HEAD means
+    every run starts from the pristine upstream config, no matter how many
+    times it has run before.
+    """
+    blob = subprocess.run(
+        ["git", "show", f"HEAD:{rel}"],
+        cwd=REPO, capture_output=True, text=True,
+    )
+    if blob.returncode != 0:
+        sys.exit(f"ERROR: cannot read {rel} from git HEAD:\n{blob.stderr.strip()}\n"
+                 f"Are you inside the repo, and is {rel} committed?")
+    return yaml.safe_load(blob.stdout)
 
 
 def save(rel, cfg):
@@ -201,8 +216,10 @@ d["meta"]["load_predictor"] = True
 save(S2, d)
 
 print("configs written\n")
-report("stage 1", load(S1), load(S1)["optimization"].get("accum_steps", 1))
-report("stage 2", load(S2), 1)
+# Report from the in-memory configs we just wrote -- load() now reads git HEAD,
+# so it would report upstream's values, not ours.
+report("stage 1", c, S1_ACCUM)
+report("stage 2", d, 1)
 print("\nUnchanged from upstream: model, crop_size, dataset_fpcs, epochs, ipe,")
 print("lr, start_lr, final_lr, warmup, anneal, weight_decay, loss settings.")
 
