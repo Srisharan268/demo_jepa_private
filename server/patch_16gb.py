@@ -180,17 +180,6 @@ def patch_stage2(check):
     need(s, a2, "dreamer_predictor_fusion_type", S2)
     s = s.replace(a2, a2 + "    dreamer_predictor = dreamer_predictor.to(dtype=torch.bfloat16)\n", 1)
 
-    # target_encoder is frozen at train.py:353 -- but 17 lines AFTER the DDP
-    # wrap, so DDP allocates full gradient buckets (1.89GB in bf16) that never
-    # carry a gradient. Freezing first makes DDP see zero trainable params and
-    # skip the buckets entirely. Pure reordering: the params end up frozen
-    # either way, and target_encoder is only ever called with training=False.
-    a3 = ("    target_encoder = DistributedDataParallel(target_encoder)\n"
-          '    logger.info("Target encoder has been wrapped with DDP.")\n')
-    need(s, a3, "target_encoder DDP wrap", S2)
-    s = s.replace(a3, "    for p in target_encoder.parameters():\n"
-                      "        p.requires_grad = False\n" + a3, 1)
-
     old = "        max_num_frames=512,"
     need(s, old, "max_num_frames=512", S2)
     s = s.replace(old, "        max_num_frames=64,", 1)
