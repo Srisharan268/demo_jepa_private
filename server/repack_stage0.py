@@ -19,7 +19,15 @@ Three things this does that a naive dict-filter does not:
    binding nothing -- the failure is silent and you only notice as a loss that
    never moves.
 
-3. The optimizer state is dropped, which is most of the 11GB.
+3. The encoder's final LayerNorm is renamed `norm` -> `norms_block.3`, which is
+   where the model built from these configs actually applies it
+   (vision_transformer.py:366). Without this, Meta's trained affine is dropped
+   and the output norm falls back to weight=1/bias=0 -- a valid LayerNorm, but
+   not the pretrained one. Matters most for Stage 2, whose AC predictor is
+   Meta-pretrained and expects Meta's feature distribution.
+   ENCODER ONLY: the AC predictor has its own legitimate `norm`.
+
+4. The optimizer state is dropped, which is most of the 11GB.
 
 Dtype is preserved by default. Pass --bf16 to halve the file at the cost of
 precision in the initial weights (that is what the Colab run did, purely to fit
@@ -36,12 +44,37 @@ import sys
 import torch
 
 
-def convert(sd, to_bf16):
-    out = {}
+# Meta's released encoder has a single final LayerNorm called `norm`. The model
+# built from these configs has no `norm`; its output norm is `norms_block[-1]`
+# (vision_transformer.py:366, the `training=False` / non-hierarchical path we
+# actually take). Without this rename the trained affine is dropped on the floor
+# and the output norm silently falls back to LayerNorm's default init
+# (weight=1, bias=0) -- valid, but not Meta's.
+#
+# Index 3 because vit_giant is depth 40 -> hierarchical_layers [9,19,29,39], so
+# norms_block[3] sits after block 39, the last one -- the same position `norm`
+# occupies. Asserted below rather than assumed.
+ENCODER_RENAMES = {
+    "norm.weight": "norms_block.3.weight",
+    "norm.bias": "norms_block.3.bias",
+}
+
+
+def convert(sd, to_bf16, renames=None):
+    """Strip prefixes, add DDP's `module.`, and optionally rename exact keys.
+
+    renames is matched on the FULL stripped key, so `norm.weight` is renamed
+    while `norm1.weight` and `blocks.0.norm2.bias` are untouched.
+    """
+    renames = renames or {}
+    out, applied = {}, []
     for k, v in sd.items():
-        name = "module." + k.replace("module.", "").replace("backbone.", "")
-        out[name] = v.to(torch.bfloat16) if to_bf16 else v
-    return out
+        base = k.replace("module.", "").replace("backbone.", "")
+        if base in renames:
+            applied.append(f"{base} -> {renames[base]}")
+            base = renames[base]
+        out["module." + base] = v.to(torch.bfloat16) if to_bf16 else v
+    return out, applied
 
 
 def main():
@@ -66,8 +99,10 @@ def main():
             sys.exit(f"ERROR: '{key}' missing from {src}. This is not the expected "
                      f"V-JEPA 2.1-AC checkpoint.")
 
-    enc = convert(raw["encoder"], args.bf16)
-    prd = convert(raw["predictor"], args.bf16)
+    # NOTE: renames apply to the ENCODER ONLY. The AC predictor has its own
+    # legitimate `norm`, which the stage 2 model expects under that exact name.
+    enc, enc_renamed = convert(raw["encoder"], args.bf16, ENCODER_RENAMES)
+    prd, _ = convert(raw["predictor"], args.bf16)
 
     sample = next(iter(enc))
     print(f"encoder tensors : {len(enc)}")
@@ -77,6 +112,14 @@ def main():
 
     if not sample.startswith("module."):
         sys.exit("ERROR: key renaming failed -- keys must start with 'module.' to bind under DDP.")
+
+    # The whole point of the rename; a silent no-op here would put us straight
+    # back to a randomly-initialised output norm.
+    if len(enc_renamed) != len(ENCODER_RENAMES):
+        sys.exit(f"ERROR: expected {len(ENCODER_RENAMES)} encoder renames, applied "
+                 f"{len(enc_renamed)}: {enc_renamed}\n"
+                 f"The checkpoint's final-norm keys are not what this script expects -- stop.")
+    print("encoder renames :", ", ".join(enc_renamed))
 
     # target_encoder aliases encoder: the raw file has no EMA copy, and both
     # context_encoder_key and target_encoder_key resolve to 'target_encoder'.
