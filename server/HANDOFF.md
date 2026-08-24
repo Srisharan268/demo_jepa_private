@@ -52,66 +52,123 @@ feasibility. Give it.
 Budget: **4–5 days GPU total on the lab card, no redos.** Data generation in
 simulation is effectively unlimited.
 
+**UPDATE 2026-08-22: there is NO deadline from the lab.** The project can run
+as long as the user wants to invest. It is not yet established whether the
+"4–5 days GPU" figure is a *card-availability* limit or was just the user's own
+time budget — **find out, it is the single biggest lever in the project.** If
+the card is available for longer, "no redos" stops being true and most of the
+risk this document is built around disappears.
+
 Blackwell is `sm_120` → **bf16 is native**. The V100/float16 worry is dead;
 `dtype: bfloat16` stays exactly as upstream.
 
 ---
 
-## 4. THE CURRENT BLOCKER — unfixed
+## 4. RESOLVED (2026-08-22) — the `no_sync()` / `static_graph` blocker
 
-Stage 1 crashes immediately on the smoke run:
+Stage 1 used to crash immediately with:
 
 ```
 RuntimeError: expect_autograd_hooks_ INTERNAL ASSERT FAILED
   at "/pytorch/torch/csrc/distributed/c10d/reducer.cpp":1705
 ```
 
-**Cause.** The gradient-accumulation code added to
-`app/vjepa_2_1_dreamer_predictor/train.py` (~line 452) uses
-`dreamer_predictor.no_sync()`. But line 290 wraps it as
-`DistributedDataParallel(dreamer_predictor, static_graph=True)`, and PyTorch
-documents `static_graph=True` as **incompatible with `no_sync()`** — `no_sync()`
-skips `prepare_for_backward` while the static graph assumes it ran.
+**Cause.** The gradient-accumulation code used `dreamer_predictor.no_sync()`
+while the module is wrapped `DistributedDataParallel(..., static_graph=True)`.
+PyTorch documents these as incompatible — `no_sync()` skips
+`prepare_for_backward` while the static graph assumes it ran.
 
-**Proposed fix (NOT APPLIED — user rejected the edit mid-application; re-propose
-and get agreement before editing).** Delete the `no_sync()` usage: drop the
-`_sync` variable and the `with _sync:` block, de-indent the body, and iterate
-`for current_frame, target_frame, current_reference, target_reference in micro_batches:`
-without `enumerate`.
+**Fixed** in commit `afef902`: `no_sync()` removed, DDP syncs on every
+micro-batch. Mathematically identical (DDP averages each micro-gradient and
+they accumulate into `.grad`; averaging is linear, so
+`avg(g1) + avg(g2) == avg(g1 + g2)`), and the cost — `n_micro - 1` redundant
+all-reduces — is **exactly zero on one GPU**, which is what we run.
 
-This is **mathematically identical**. DDP averages each micro-gradient across
-ranks and they accumulate into `.grad`; averaging is linear, so
-`avg(g1) + avg(g2) == avg(g1 + g2)`. The only cost is `n_micro - 1` redundant
-all-reduces per step — **exactly zero on a single GPU**, which is what the final
-run now uses anyway.
-
-Alternative if you prefer: remove `static_graph=True` from the DDP wrap instead.
-More invasive (changes upstream behavior); not recommended.
+**Verified:** stage 1 now runs 20 steps end to end and is deterministic.
 
 ---
 
-## 5. SECOND UNRESOLVED ISSUE — encoder checkpoint key mismatch
+## 5. RESOLVED (2026-08-22) — encoder checkpoint key mismatch
 
-Also visible in that same run, and **nobody has investigated it yet**:
+Traced through the source rather than assumed. Of the five missing-key
+categories, **four are genuinely benign** and one was real:
 
-```
-loaded pretrained encoder with msg: _IncompatibleKeys(
-  missing_keys=['module.img_mod_embed', 'module.video_mod_embed',
-                'module.patch_embed_img.proj.weight', 'module.patch_embed_img.proj.bias',
-                'module.norms_block.0.weight' ... 'module.norms_block.3.bias'],
-  unexpected_keys=['module.norm.weight', 'module.norm.bias'])
-```
+| Missing key | Used in forward? | Verdict |
+|---|---|---|
+| `patch_embed_img.proj.*` | **No** | `dataset.py:209` does `np.repeat(images[:1], repeats=2)` → `T=2`. `check_temporal_dim` (`vision_transformer.py:272`) tests `shape[2] == img_temporal_dim_size` i.e. `2 == 1` → False → **video branch always**. The img branch is dead code here. |
+| `img_mod_embed` | **No** | img branch only |
+| `video_mod_embed` | Yes | `nn.init.normal_(std=1e-6)` — negligible, one broadcast vector |
+| `norms_block.0-2` | Computed, **discarded** | appended to `hier`, which is unused when `training=False` and `return_hierarchical=False` (neither is ever set in stage 1). Wasted compute only. |
+| `norms_block.3` | **YES — the output norm** | `vision_transformer.py:366`, `x = self.norms_block[-1](x)`. Was falling back to default init (weight=1, bias=0) while the checkpoint's trained `norm.*` was discarded. |
 
-The released V-JEPA 2-AC checkpoint has a single final `norm`; the model built
-from this config expects `norms_block.0-3` (from `n_output_distillation=4`) plus
-`patch_embed_img` and modality embeddings (`modality_embedding: true`).
+**Fixed** in commit `939124c`: `repack_stage0.py` now renames encoder
+`norm.weight/bias` → `norms_block.3.weight/bias`. Encoder-only — the AC
+predictor's final norm is `predictor_norm` (`ac_predictor.py:101`), untouched.
+Index 3 because depth 40 → `hierarchical_layers [9,19,29,39]`, so
+`norms_block[3]` sits after the last block, the position `norm` occupies.
 
-**Why it matters:** those tensors are randomly initialised. If the forward path
-touches them, the "frozen pretrained encoder" is emitting partly-random features,
-which would silently cap everything downstream. **Investigate before any long run.**
-Check which of those modules the forward actually uses at
-`img_temporal_dim_size: 1`, `modality_embedding: true`. It may be benign (the
-video path may bypass `patch_embed_img`) — but confirm, do not assume.
+**After the fix `unexpected_keys` is empty.** The remaining `missing_keys` are
+the four benign categories above — expected, do not chase them.
+
+Mattered most for **stage 2**, whose AC predictor is Meta-pretrained and expects
+Meta's feature distribution. Stage 1 trains its dreamer from scratch and would
+largely have absorbed the difference.
+
+*Note: this mismatch is inherent to skipping stage 0 (§2). It is the gap between
+"trained by stage 0" and "downloaded from Meta" made concrete — there may be
+more of it. Worth re-checking against the V-JEPA 2-AC paper.*
+
+---
+
+## 5b. FIRST REAL RUNS (2026-08-22) — and why the timings are worthless
+
+Stage 1 smoke, 4080 Super 16GB, `patch_16gb.py` applied (bf16 dreamer), batch 1
+× accum 2, 20 steps:
+
+| | step 0 | step 10 | step 19 |
+|---|---|---|---|
+| loss | 0.971 | 0.604 | 0.540 |
+| mem | 8.75 GB | **9.30 GB** | 9.30 GB |
+| gpu | 1800 ms | 731.9 ms | **685.5 ms** |
+
+**Memory is trustworthy: 9.30 GB.** It independently corroborates §6's
+meta-tensor analysis — add back fp32 for the dreamer (+3.4 GB) and 7 more
+samples of activations (~1.0–1.9 GB each) and you land at ~23–24 GB for batch 8
+fp32, inside §6's 24–27 GB estimate derived a completely different way.
+
+**Timings are NOT trustworthy.** Three runs of identical compute gave
+685 → 1069 → **1417 ms** GPU time, monotonically degrading. Cause: the box is
+shared and **5.11 GB / significant CPU was held by another user's jobs**
+(project `nero_four_cube_row`: two `check_actions.py`, one `src.train.bc`,
+all under the same `cobot` account). Every timing sample this project has ever
+taken was contended.
+
+> **There is still NO valid throughput measurement for this project.** Every
+> time estimate in §7/§8 and every extrapolation is arithmetic. Getting one
+> uncontended `ms/sample` number, with a batch-size sweep and a repeat of the
+> first batch size as a drift control, is the highest-value pending task.
+
+Loss determinism confirmed: two runs gave bit-identical 0.971/0.604/0.540.
+**Losses are only comparable when the encoder is unchanged** — the §5 fix
+shifted the feature space, so pre-fix and post-fix losses cannot be compared.
+
+**Stage 2 is blocked, not broken.** It OOMs at
+`DistributedDataParallel(target_encoder)` (`train.py:336`) needing 1.89 GiB of
+gradient buckets, with only ~10.5 GB available after the other users' 5.11 GB.
+It got through model init and three other DDP wraps first. On 32 GB this will
+not occur. Do not "fix" it — see §12.
+
+**Deploy → rollout → video works end to end.** Proven 2026-08-22 using
+`~/vjepa2_ac_repacked.pt` directly as the deploy checkpoint (it already has
+`target_encoder` and `predictor`, the only two keys `make_deploy_ckpt.py`
+needs), so stage 2 was not required. CoppeliaSim boots headless, frames land on
+disk, `make_video.py` produces a gif. Motion is minimal — expected, with a
+20-step dreamer, no stage-2 fine-tuning, and MPC cut to 20×5.
+
+**wandb was uploading to a stranger's account.** `/home/cobot/.netrc` on the
+shared box holds credentials for `thevishesh16` (IIT Kanpur). **Always set
+`WANDB_MODE=disabled`** (`run_rollout.py` now defaults it). Do not delete the
+netrc — it is not ours.
 
 ---
 
@@ -251,10 +308,28 @@ rebuild it. They want plain commands.
 | `make_video.py` | side-by-side reference vs execution gif/mp4 |
 | `install_sim_env.sh` / `use_prebuilt_sim.sh` | sim env from source (pinned) or from the user's 558MB prebuilt tarball |
 
-**Code changes to upstream — exactly one file:**
+**Code changes to upstream — still exactly one file:**
 `app/vjepa_2_1_dreamer_predictor/train.py` — gradient accumulation
-(`accum_steps` config key, defaults to 1 = upstream behaviour). This is the file
-with the bug in §4.
+(`accum_steps`, defaults to 1 = upstream behaviour), now with `no_sync()`
+removed (§4). Everything else lives in `server/` or in `patch_16gb.py`, which
+mutates files on a throwaway branch only.
+
+**Sim environment (2026-08-22): installed and working.**
+`~/simenv` on the 4080 box, from `use_prebuilt_sim.sh`. `PY_SIM` and
+`COPPELIASIM_ROOT` in `run_rollout.py` are now set — §9's "only real
+placeholders left" are gone. CoppeliaSim 4.1 boots headless under Xvfb :99;
+every failed plugin is a GUI/ROS one and harmless (`IK`, `Vision`,
+`OpenGL3Renderer`, all `Dynamics*` load fine).
+
+*Gotcha:* the tarball stores **absolute symlink targets** (e.g.
+`libcoppeliaSim.so.1 -> /content/CoppeliaSim/...`), not just absolute paths.
+`use_prebuilt_sim.sh` now relocates them (commit `f86c767`). Re-running the
+extractor restores the broken links, so re-run the script, never `tar` by hand.
+
+**`~/.bashrc` on the SHARED `cobot` account** had `COPPELIASIM_ROOT`,
+`LD_LIBRARY_PATH`, `QT_QPA_PLATFORM_PLUGIN_PATH` appended by that script.
+Other users share this account. `run_rollout.py` sets all three itself, so the
+`.bashrc` block is removable if it causes trouble (backup at `~/.bashrc.bak`).
 
 ---
 
@@ -276,18 +351,36 @@ That tarball stores **absolute paths** (`opt/conda/envs/rlbench`,
 
 ---
 
-## 11. Immediate next steps
+## 11. Immediate next steps (rewritten 2026-08-22)
 
-1. **Fix the `no_sync()` bug** (§4) — propose, get agreement, then edit
-2. **Investigate the encoder key mismatch** (§5)
-3. Re-run `SMOKE_RUNBOOK.md` step 7 on the 4080 box
-4. Capture `[iter: ... ms]` and `[mem: ...]` — **the first real measurements in this project**; every time/memory number so far is arithmetic
-5. Finish smoke steps 8–14 through to a gif
-6. Then update `run_stage1.sh`/`run_stage2.sh` and `RUNBOOK.md` for **1 GPU**, and re-derive batch/accum
+Smoke testing is essentially **done** — §4 and §5 closed, stage 1 trains,
+sim works, rollout→gif proven. What remains:
 
-The user is on the 4080 box at `~/Demo-JEPA` (note: earlier path was
-`~/Demo_JEPA/Demo-JEPA`), conda env `demojepa`, python 3.12,
-torch built for cu130 originally — **must be cu128** to match driver 570.211.01.
+1. **Get an uncontended throughput measurement.** The one true blocker on all
+   planning. Needs the 4080 (or rented GPU) with no other jobs: verify via
+   `nvidia-smi`, then sweep batch 1/2/4 and **re-run batch 1 last as a drift
+   control**. Compare `ms/sample` = `gpu_ms / (batch_size × accum_steps)`.
+2. **Establish whether the lab card's "4–5 days" is calendar or availability**
+   (§3). Changes everything downstream.
+3. **Run stage 2 to completion** — needs ~2 GB more than the shared 4080
+   currently offers. Will not be a problem on 32 GB or on rented hardware.
+4. **User is learning the codebase before spending money** — deliberate, agreed,
+   and correct. Assist by checking their reasoning rather than supplying
+   answers; they explicitly want to stop being a passenger.
+5. Rehearsal run on **rented cloud GPU** before the lab card.
+6. Then update `run_stage1.sh`/`run_stage2.sh` and `RUNBOOK.md` for **1 GPU**.
+7. Data collection for real tasks via `scripts/rlbench_tools/cli.py` —
+   **never timed; measure episodes/hour before planning around it.**
+
+**Worth building if compute stays tight: feature caching.** The encoder is
+frozen and runs under `no_grad()` in both stages, so its outputs are
+precomputable. §8 estimates ~3× on stage 1 for ~270 GB with every-3rd-frame
+subsampling; the test box has 403 GB free. Verify the 3× before committing —
+it is arithmetic (see §12).
+
+The user is on the 4080 box at `~/Demo-JEPA`, conda env `demojepa`, python 3.12,
+torch **cu128** to match driver 570.211.01. Branch `test-16gb` there carries the
+`patch_16gb.py` mutations; `server-4gpu` is clean.
 
 ---
 
@@ -299,7 +392,26 @@ torch built for cu130 originally — **must be cu128** to match driver 570.211.0
 - Framed "9 days for any results" — wrong, WSD means any budget ≥40 epochs gives a real model.
 - Said "data is free" re: training time. Half true — per-step cost is fixed, but required step count rises with data.
 - Built an over-engineered `smoketest.sh` that introduced its own failures (wget flooding 220k lines through `tee`; a `[ -s "$f" ]` check that would accept a truncated download). **Deleted at their request. Do not rebuild.**
-- Wrote `no_sync()` without checking `static_graph=True` compatibility — the current blocker.
+- Wrote `no_sync()` without checking `static_graph=True` compatibility. Fixed 2026-08-22 (§4).
+
+**Session of 2026-08-22 — all the same root cause: asserting a mechanism
+instead of verifying it.**
+
+- Proposed freezing `target_encoder` *before* its DDP wrap to skip gradient-bucket allocation. PyTorch rejects this outright: `DistributedDataParallel is not needed when a module doesn't have any parameter that requires a gradient`. Reverted (`daea488`). Skipping the wrap is also unsafe — `_normalize_pretrained_keys` strips only `backbone.`, never `module.`, so an unwrapped `target_encoder` would `load_state_dict(strict=False)` and bind **nothing**, silently.
+- Claimed GradScaler on bf16 was "harmless, just wasted time." It is a hard `NotImplementedError` — `_amp_foreach_non_finite_check_and_unscale_` has no BFloat16 kernel. That is *why* `patch_stage2` bypasses the scaler; the reasoning should have been carried across rather than re-derived from numerics.
+- Placed deploy's bf16 casts *after* all four models were built, when the OOM happens *during* construction of the fourth. The casts never executed. The tell was memory coming back byte-identical (9.99 → 10.00 GB): **a patch that changes no measurable number did not run.**
+- Inferred the MPC config from a hardcoded print string in `run_rollout.py` and told the user they had skipped a step they had not.
+
+**A whole class of bug found in `server/` tooling: scripts trusting output they
+themselves wrote.** `prepare_configs.py` and `prepare_deploy_config.py` both
+read, validated, and overwrote the same file, so a second run validated its own
+output — and in the deploy case reported a deliberate local MPC reduction as
+"upstream changed". Both now read the baseline from `git show HEAD:<path>`.
+Related: `run_rollout.py` printed hardcoded MPC values regardless of config, and
+printed only `stdout` on failure while tracebacks go to `stderr`.
+**If you add a script here, make it idempotent and make it report what is real.**
+
+- `wait_for_port()` probed readiness with `connect_ex()`. `server.py` accepts exactly ONE client, so the probe *was* the client: the server accepted it, the probe closed the socket, and the server died with `BrokenPipeError` sending its init reply — after which `deploy.py` got `ConnectionRefusedError` from a different log. **The readiness check destroyed the thing it checked.** Now waits on the server log (`fda1072`).
 
 **Working style they want:** verify against the actual source before asserting;
 plain commands over automation; honest probabilities over reassurance; say
