@@ -313,6 +313,30 @@ Pulling also installs nothing on hardware you are paying for.
 Logs sync every 60s (kilobytes), checkpoints every 15 min (~9 GB each). Start it
 in a second terminal before the first long run and leave it going.
 
+### Checkpointing: latest.pt is OVERWRITTEN
+
+Both stages do the same thing (`train.py:578` / `:622`):
+
+```python
+if epoch % CHECKPOINT_FREQ == 0 or epoch == (num_epochs - 1):   # every epoch
+    save_checkpoint(epoch + 1, latest_path)          # latest.pt -- OVERWRITTEN
+    if save_every_freq > 0 and epoch % save_every_freq == 0:
+        save_checkpoint(epoch + 1, f"e{epoch}.pt")   # kept
+```
+
+Upstream ships `save_every_freq: 25`. On a 12-epoch run only epoch 0 satisfies
+`0 % 25 == 0`, so you keep **`e0.pt` (untrained) and nothing else** while
+`latest.pt` is overwritten twelve times. Set it explicitly:
+
+```bash
+python server/prepare_configs.py --gpus 1 --epochs 12 --ipe 100        --warmup 3 --anneal 3 --save-every 4
+```
+
+That keeps `e0/e4/e8.pt` plus `latest.pt` = **~36 GB for stage 1 alone**.
+`prepare_configs.py` prints the estimate. **Check `df -h` before choosing** —
+vast.ai default disk allocations are often too small for this, and you also need
+room for the 2.64 GB base checkpoint and the dataset.
+
 ### Why checkpoints are 9 GB, and the easy 45% saving
 
 Each `latest.pt` is encoder **4.05 GB** + dreamer_predictor **1.70 GB** + Adam
@@ -335,8 +359,15 @@ lab run, where it turns a 9 GB write per epoch into 1.7 GB.
 - [ ] wandb runs synced
 - [ ] `nvidia-smi` peak memory noted per config
 - [ ] the filled-in table from §4.1
-- [ ] **`exp/stage1/latest.pt` copied off the box** if §4.6 ran — it is the only
-      trained artifact and the instance is ephemeral
+- [ ] **`exp/stage1/latest.pt` and `exp/stage2/latest.pt` copied off the box** —
+      the instance is ephemeral. ~9 GB each; budget 15-30 min.
+      To move only what is needed, extract the trained weights (stage 2 reads
+      only `checkpoint["dreamer_predictor"]`, so the frozen 4.05 GB encoder and
+      3.40 GB of Adam state do not need to travel):
+      ```bash
+      python -c "import torch; c=torch.load('exp/stage1/latest.pt',map_location='cpu',mmap=True); torch.save({'dreamer_predictor':c['dreamer_predictor'],'epoch':c['epoch']},'stage1_slim.pt')"
+      ```
+      1.7 GB instead of 9 GB. Keep the full file too if disk allows.
 
 Then destroy the instance. You are billed while it exists.
 

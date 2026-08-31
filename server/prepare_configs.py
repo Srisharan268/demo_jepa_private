@@ -44,6 +44,12 @@ _ap.add_argument("--epochs", type=int, default=None, help="override epochs for b
 # 300` for the optimiser, and gives 12 checkpoints instead of 4.
 # warmup/anneal are ABSOLUTE (in epochs), not fractions -- scale them yourself.
 _ap.add_argument("--ipe", type=int, default=None, help="iterations per epoch (checkpoint granularity)")
+# latest.pt is OVERWRITTEN every epoch (CHECKPOINT_FREQ=1). Only e{N}.pt is
+# kept, and only when epoch % save_every_freq == 0. Upstream ships 25, so a
+# short run keeps ONLY e0.pt -- an untrained model -- and nothing else.
+# Each checkpoint is ~9GB, so set this against available disk, not habit.
+_ap.add_argument("--save-every", type=int, default=None,
+                 help="keep e{N}.pt every N epochs (~9GB each); upstream 25")
 _ap.add_argument("--warmup", type=int, default=None, help="warmup epochs (absolute)")
 _ap.add_argument("--anneal", type=int, default=None, help="anneal epochs (absolute)")
 _ap.add_argument("--smoke", action="store_true",
@@ -173,6 +179,11 @@ def apply_schedule_overrides(cfg):
     o = cfg["optimization"]
     if ARGS.ipe:
         o["ipe"] = ARGS.ipe
+    if ARGS.save_every is not None:
+        cfg["meta"]["save_every_freq"] = ARGS.save_every
+        kept = len(range(0, o["epochs"], ARGS.save_every)) if ARGS.save_every > 0 else 0
+        print(f"  keeping {kept} e{{N}}.pt checkpoint(s) + latest.pt "
+              f"~= {(kept + 1) * 9} GB")
     for key in ("warmup", "anneal"):
         val = getattr(ARGS, key)
         if val is not None:
