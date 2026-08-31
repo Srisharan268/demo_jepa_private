@@ -46,8 +46,9 @@ smoke set is invalid:
 - batch 8 gives **1 batch/epoch** → the loader hits `StopIteration` and rebuilds
   every single step. That inflates `data` time and pollutes `iter`.
 
-**Minimum: ~160 paired episodes in `data/train`** (10 batches/epoch at batch 16).
-More is better.
+**Minimum: ~640 paired episodes in `data/train`** (20 batches/epoch at batch 32,
+the largest size in the §4.1 sweep). Below ~320 you cannot test batch 32 at all.
+Ideal is the full 4-task x 800-pair set, which is also the real run's dataset.
 
 Collect on the **4080 box** — this is CPU/sim work, needs no GPU, costs nothing,
 and runs while you do everything else:
@@ -136,41 +137,67 @@ HANDOFF §6).
 
 ## 4. Measurements
 
-Order matters. **Batch size is edited in the YAML *after* `prepare_configs.py`**,
-because `prepare_configs.py` reads its baseline from `git HEAD` and rewrites the
-file — running it again resets your edit. (This is the idempotency fix; see §12.)
+Order matters. **Always run `set_batch.py` *after* `prepare_configs.py`** —
+`prepare_configs.py` reads its baseline from `git HEAD` and rewrites the file,
+so running it again undoes your batch choice.
 
 ```bash
-python - <<'PY'
-import yaml, sys
-B = int(sys.argv[1]) if len(sys.argv) > 1 else 8
-p = "configs/train/vjepa_2_1_dreamer_predictor.yaml"
-c = yaml.safe_load(open(p))
-c["data"]["batch_size"] = B
-c["optimization"].update(accum_steps=1, epochs=1, ipe=50, warmup=0, anneal=0)
-yaml.safe_dump(c, open(p, "w"), sort_keys=False)
-print("batch_size", B, "ipe 50 accum 1")
-PY
+python server/set_batch.py --batch 8 --measure
 ```
+
+`--measure` sets `epochs 1, ipe 50, warmup 0, anneal 0` and forces
+`accum_steps: 1`, so `ms/sample` is measured on one micro-batch rather than
+averaged over an accumulation loop. It also prints `batches/epoch` and refuses
+configurations that would hang.
+
+### 4.0 The global-batch rule (read before touching batch size)
+
+For any **real** run, `batch_size × world_size × accum_steps` must equal the
+paper's **128**. The lr (`4.25e-4`), warmup and WSD schedule are tuned for it —
+changing the global batch changes the optimisation problem, not just the speed.
+
+```
+batch  8 × accum 16 = 128     fits 32GB   (the lab card)
+batch 32 × accum  4 = 128     fits 96GB   (rented)
+```
+
+**Both do exactly 128 sample-forwards per optimizer step, and the same FLOPs.**
+Larger micro-batches are faster only through reduced overhead — fewer Python
+iterations, fewer kernel launches, better SM occupancy. **Expect ~1.2–1.6×, not
+the 4× the accum ratio suggests.** `set_batch.py` computes `accum_steps` for you
+and refuses batch sizes that do not divide 128 (except under `--measure`, where
+accum is 1 and divisibility is irrelevant).
 
 ### 4.1 Stage 1 throughput and memory
 
-Run at **batch 8**, then **16**, then **batch 8 again as a drift control**.
-If the two batch-8 numbers disagree, the box is not stable and nothing else
-here is trustworthy.
+Sweep **8 → 16 → 32**, then **batch 8 again as a drift control**. If the two
+batch-8 numbers disagree, the box is not stable and nothing else here is
+trustworthy. Add **48** (measure-only) if 32 leaves plenty of headroom.
 
 ```bash
-bash server/run_stage1.sh 2>&1 | tee s1_b8.log
+python server/set_batch.py --batch 8  --measure && bash server/run_stage1.sh 2>&1 | tee s1_b8.log
+python server/set_batch.py --batch 16 --measure && bash server/run_stage1.sh 2>&1 | tee s1_b16.log
+python server/set_batch.py --batch 32 --measure && bash server/run_stage1.sh 2>&1 | tee s1_b32.log
+python server/set_batch.py --batch 8  --measure && bash server/run_stage1.sh 2>&1 | tee s1_b8_control.log
 ```
+
+**The question this answers:** does `ms/sample` keep falling as batch grows?
+
+- **Flattens by 8** → the 32 GB lab card gives up little. Plan around it.
+- **Still falling at 32** → the lab card is genuinely handicapped, and free-but-slower
+  may lose to $1/hr cloud. That is a real strategic finding worth reporting.
 
 Record from the **last** `log_stats` line (steady state, not step 0):
 
-| | batch 8 | batch 16 | batch 8 (control) |
-|---|---|---|---|
-| `gpu` ms | | | |
-| `mem` MB | | | |
-| `data` ms | | | |
-| **ms/sample** = `gpu / batch` | | | |
+| | b8 | b16 | b32 | b8 control |
+|---|---|---|---|---|
+| `gpu` ms | | | | |
+| `mem` MB | | | | |
+| `data` ms | | | | |
+| **ms/sample** = `gpu / batch` | | | | |
+
+Then pick the real-run config: the largest batch that fits **32 GB** with
+headroom, and `set_batch.py` without `--measure` to restore global batch 128.
 
 ### 4.2 Does §6's memory analysis survive contact?
 
