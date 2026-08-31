@@ -147,9 +147,44 @@ all** — without wandb they exist only in terminal scrollback.
 ## 3. Box setup
 
 ```bash
-git clone -b cloud-test <lab-remote> Demo-JEPA && cd Demo-JEPA
-python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
-nvidia-smi --query-gpu=name,memory.total --format=csv
+git clone -b cloud-test https://github.com/Srisharan268/demo_jepa_private.git Demo-JEPA
+cd Demo-JEPA
+nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
+**Do not reinstall torch** if the image already has a working CUDA build —
+that is the single easiest way to burn 20 minutes of paid time and end up with
+a CPU-only wheel. Install everything else:
+
+```bash
+pip install -r requirements.txt
+```
+
+If that tries to pull a different torch, install the rest without it:
+
+```bash
+grep -v '^torch' requirements.txt | pip install -r /dev/stdin
+```
+
+Then confirm the imports that have actually broken before (`decord` fails on
+some platforms, `cv2` needs the headless build in containers):
+
+```bash
+python -c "import torch, decord, cv2, h5py, pandas, timm, wandb, yaml, einops; print('imports OK')"
+```
+
+`pip install opencv-python-headless` if `cv2` fails in a headless container.
+
+```bash
+python -m wandb login          # see §2.4
+export WANDB_MODE=online
+```
+
+Sanity-check the repo itself before spending anything:
+
+```bash
+python server/check_metrics.py --offline
 ```
 
 ```bash
