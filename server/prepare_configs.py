@@ -208,6 +208,9 @@ c["folder"] = OUT_STAGE1
 c["data"]["dataset"] = DATASET
 c["data"]["camera_views"] = [CAMERA]
 c["data"]["data_type"] = "sim"
+# Held-out split -> in-loop validation (train.py). Without it you cannot tell
+# learning from memorising on a small dataset.
+c["data"]["val_dataset"] = HELD_OUT
 # batch_size 8 is the memory ceiling per GPU (measured ~1.0-1.9 GB/sample of
 # activations). Accumulation makes up the rest of the paper's global batch.
 S1_BATCH = 1 if ARGS.smoke else 8

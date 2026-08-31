@@ -110,6 +110,11 @@ def main(args, resume_preempt=False):
     camera_views = cfgs_data.get("camera_views")
     data_type = cfgs_data.get("data_type", "real")
     variance_step = cfgs_data.get("variance_step", 0)
+    # Held-out split for validation. Absent from upstream configs, so absent =>
+    # no validation and behaviour is exactly as before.
+    val_dataset = cfgs_data.get("val_dataset", None)
+    val_freq = int(cfgs_data.get("val_freq", 1))          # in epochs
+    val_batches = int(cfgs_data.get("val_batches", 20))   # cap; -1 = whole set
 
     # -- DATA AUGS
     cfgs_data_aug = args.get("data_aug")
@@ -247,6 +252,28 @@ def main(args, resume_preempt=False):
         data_type=data_type,
         variance_step=variance_step,
     )
+    # -- held-out loader for validation. `val_dataset` defaults to None, so this
+    # is inert unless the config sets it: upstream behaviour is unchanged.
+    # drop_last=False so a small val set is not silently emptied (the same
+    # drop_last trap that makes the train loader hang when batch > pairs).
+    val_loader = None
+    if val_dataset:
+        (val_loader, _val_sampler) = init_data(
+            dataset=val_dataset,
+            batch_size=batch_size,
+            transform=transform,
+            rank=rank,
+            world_size=world_size,
+            camera_views=camera_views,
+            persistent_workers=False,
+            num_workers=max(1, num_workers // 2),
+            pin_mem=pin_mem,
+            data_type=data_type,
+            variance_step=variance_step,
+            drop_last=False,
+        )
+        logger.info(f"validation loader: {val_dataset} ({len(val_loader)} batches)")
+
     try:
         _dlen = len(unsupervised_loader)
     except Exception:  # Different interface for webdataset
@@ -365,9 +392,48 @@ def main(args, resume_preempt=False):
         gc.disable()
         gc.collect()
 
+    def run_validation():
+        """Mean L1 on the held-out split. No grad, no optimizer, models restored.
+
+        Without this you cannot tell learning from memorising -- with few
+        episodes the train loss falls either way. Compare against the
+        layer-normed-space baselines: ~1.13 = chance, ~0.80 = predicting zeros
+        (the degenerate solution). Verify those empirically rather than trusting
+        the arithmetic.
+        """
+        if val_loader is None:
+            return None
+        dreamer_predictor.eval()
+        tot, n = 0.0, 0
+        with torch.no_grad():
+            for i, sample in enumerate(val_loader):
+                if val_batches > 0 and i >= val_batches:
+                    break
+                cf, tf, cr, tr = [x.to(device, dtype=dtype, non_blocking=True) for x in sample]
+                with torch.cuda.amp.autocast(dtype=dtype, enabled=mixed_precision):
+                    t_feat = forward_feature_eval(encoder, tf)
+                    c_feat = forward_feature_eval(encoder, cf)
+                    cr_feat = forward_feature_eval(encoder, cr)
+                    tr_feat = forward_feature_eval(encoder, tr)
+                    out = dreamer_predictor(xt=c_feat, yt=cr_feat, yt_plus_1=tr_feat)
+                    tot += float(F.l1_loss(out, t_feat, reduction="mean"))
+                n += 1
+        dreamer_predictor.train()
+        return tot / max(n, 1)
+
+    def forward_feature_eval(frame_encoder, frame):
+        f = frame_encoder(frame)
+        if normalize_reps:
+            f = F.layer_norm(f, (f.size(-1),))
+        return f
+
     # -- TRAINING LOOP
     for epoch in range(start_epoch, num_epochs):
         logger.info("Epoch %d" % (epoch + 1))
+        # Peak memory is cumulative-max since process start and never resets, so
+        # without this every epoch reports the startup spike forever -- which
+        # would corrupt a batch-size sweep.
+        torch.cuda.reset_peak_memory_stats()
 
         loss_meter = AverageMeter()
         iter_time_meter = AverageMeter()
@@ -471,6 +537,20 @@ def main(args, resume_preempt=False):
                         # Divide so the accumulated gradient equals the gradient of the
                         # mean loss over the full effective batch.
                         loss = loss_fn(dreamer_output, target_feature) / n_micro
+                        # Diagnostics on the LAST micro-batch only (cheap).
+                        # pred_std: spread of predictions across the batch. The
+                        # classic JEPA failure is emitting a constant -- loss
+                        # parks near the "predict zeros" baseline (~0.80 in
+                        # layer-normed space) while this collapses toward 0.
+                        # cos: direction-only error. L1 conflates direction and
+                        # scale; if cos improves while L1 stalls, the model is
+                        # learning structure but mis-scaling.
+                        _pred_std = dreamer_output.detach().float().std(dim=0).mean()
+                        _cos = F.cosine_similarity(
+                            dreamer_output.detach().float().flatten(1),
+                            target_feature.detach().float().flatten(1),
+                            dim=-1,
+                        ).mean()
 
                     if mixed_precision:
                         scaler.scale(loss).backward()
@@ -510,6 +590,8 @@ def main(args, resume_preempt=False):
                     _new_wd,
                     float(grad_norm_unclipped),
                     grad_norm_clipped,
+                    float(_pred_std),
+                    float(_cos),
                 )
 
             (
@@ -518,6 +600,8 @@ def main(args, resume_preempt=False):
                 _new_wd,
                 _grad_norm_unclipped,
                 _grad_norm_clipped,
+                _pred_std,
+                _cos,
             ), gpu_etime_ms = gpu_timer(train_step)
             iter_elapsed_time_ms = (time.time() - itr_start_time) * 1000.0
             loss_meter.update(loss)
@@ -536,7 +620,8 @@ def main(args, resume_preempt=False):
                         "[mem: %.2e] "
                         "[iter: %.1f ms] "
                         "[gpu: %.1f ms] "
-                        "[data: %.1f ms]"
+                        "[data: %.1f ms] "
+                        "[std: %.3f] [cos: %.3f] [samp/s: %.1f]"
                         % (
                             epoch + 1,
                             itr,
@@ -549,6 +634,10 @@ def main(args, resume_preempt=False):
                             iter_time_meter.avg,
                             gpu_time_meter.avg,
                             data_elapsed_time_meter.avg,
+                            _pred_std,
+                            _cos,
+                            batch_size * world_size * accum_steps
+                            / max(gpu_time_meter.avg / 1000.0, 1e-9),
                         )
                     )
             def wandb_log_stats():
@@ -566,11 +655,23 @@ def main(args, resume_preempt=False):
                     "iter": iter_time_meter.avg,
                     "gpu": gpu_time_meter.avg,
                     "data": data_elapsed_time_meter.avg,
+                    "pred_std": _pred_std,
+                    "cos_sim": _cos,
+                    "samples_per_sec": batch_size * world_size * accum_steps
+                    / max(gpu_time_meter.avg / 1000.0, 1e-9),
                 })
 
             log_stats()
             wandb_log_stats()
             # assert not np.isnan(loss), "loss is nan"
+
+        # -- Validation
+        if val_loader is not None and (epoch + 1) % val_freq == 0:
+            _vl = run_validation()
+            logger.info("epoch %d  train %.4f  VAL %.4f  (chance ~1.13, zeros ~0.80)"
+                        % (epoch + 1, loss_meter.avg, _vl))
+            wandb.log({"epoch": epoch + 1, "val_loss": _vl,
+                       "train_minus_val": loss_meter.avg - _vl})
 
         # -- Save Checkpoint
         logger.info("avg. loss %.3f" % loss_meter.avg)
