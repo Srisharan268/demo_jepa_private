@@ -28,4 +28,4 @@ echo "stage 1 checkpoint: $CKPT"
 
 exec python -m app.main \
     --fname configs/train/vjepa_2_1_dreamer_ac.yaml \
-    --devices cuda:0 cuda:1 cuda:2 cuda:3
+    --devices cuda:0

@@ -292,13 +292,13 @@ rebuild it. They want plain commands.
 | File | Purpose |
 |---|---|
 | `HANDOFF.md` | this file |
-| `SMOKE_RUNBOOK.md` | **14 plain numbered steps for the 16GB smoke test — the active document** |
-| `RUNBOOK.md` | full 18-step lab runbook (written for 4 GPUs — **now stale on GPU count**) |
+| `RUNBOOK.md` | **the rented-GPU measurement session — the active document on branch `cloud-test`** |
+| *(`SMOKE_RUNBOOK.md`)* | 16GB smoke procedure. Finished; deleted on `cloud-test`, still on `server-4gpu` |
 | `README.md` | deviations summary + order of operations |
 | `repack_stage0.py` | 11GB → repacked; key renaming; asserts `module.` prefix |
 | `split_dataset.py` | seeded (`Random(0)`) train/val split preserving episode pairing |
 | `prepare_configs.py` | writes both configs; `--gpus N --smoke --epochs N`; **hang guard exits 1** |
-| `patch_16gb.py` | notebook's bf16 patches for the 16GB box. **SMOKE ONLY — never merge** |
+| *(`patch_16gb.py`)* | bf16 patches for the 16GB box. **SMOKE ONLY.** Deleted on `cloud-test`; lives on `server-4gpu`/`test-16gb` |
 | `optional_mask_size.py` | `max_num_frames` 512→64, host-RAM fix |
 | `run_stage1.sh` / `run_stage2.sh` | launchers (currently hardcode 4 devices — **need updating to 1 GPU**) |
 | `run_eval_stage1.sh` | upstream retrieval eval; auto-sizes batch to held-out set |
@@ -368,7 +368,7 @@ sim works, rollout→gif proven. What remains:
    and correct. Assist by checking their reasoning rather than supplying
    answers; they explicitly want to stop being a passenger.
 5. Rehearsal run on **rented cloud GPU** before the lab card.
-6. Then update `run_stage1.sh`/`run_stage2.sh` and `RUNBOOK.md` for **1 GPU**.
+6. ~~Update `run_stage1.sh`/`run_stage2.sh` and `RUNBOOK.md` for 1 GPU~~ — done on `cloud-test`.
 7. Data collection for real tasks via `scripts/rlbench_tools/cli.py` —
    **never timed; measure episodes/hour before planning around it.**
 
@@ -380,7 +380,8 @@ it is arithmetic (see §12).
 
 The user is on the 4080 box at `~/Demo-JEPA`, conda env `demojepa`, python 3.12,
 torch **cu128** to match driver 570.211.01. Branch `test-16gb` there carries the
-`patch_16gb.py` mutations; `server-4gpu` is clean.
+`patch_16gb.py` mutations; `server-4gpu` is clean; **`cloud-test` is the branch for
+the rented-GPU session** (no 16GB hacks, 1 GPU, single `RUNBOOK.md`).
 
 ---
 
