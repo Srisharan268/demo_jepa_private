@@ -189,6 +189,58 @@ the 4× the accum ratio suggests.** `set_batch.py` computes `accum_steps` for yo
 and refuses batch sizes that do not divide 128 (except under `--measure`, where
 accum is 1 and divisibility is irrelevant).
 
+### 4.0b Verify the metrics BEFORE the long run
+
+A metric that is computed but never logged — or logged as a constant — is worse
+than no metric, because it looks like evidence.
+
+**Offline, no GPU, run it now:**
+
+```bash
+python server/check_metrics.py --offline
+```
+
+Asserts the expressions respond correctly to known-good / known-collapsed /
+known-random inputs. Must print `ALL OFFLINE CHECKS PASSED`.
+
+**Live, on the first short run:**
+
+```bash
+python server/check_metrics.py --live sweep_s1_b8.log
+```
+
+Checks the val loader was built, that `std`/`cos`/`samp/s`/`VAL`/`retrieval`
+all actually appear, and — importantly — that `std` and `cos` **vary between
+steps**. A constant value means a constant is being printed, not measured.
+
+### 4.0c Reading the metrics
+
+| Metric | Healthy | Warning |
+|---|---|---|
+| `VAL` | falling, and **below 0.80** | stuck ≥0.80, or rising while train falls |
+| `train − val` gap | small, stable | widening fast → overfitting; more epochs waste money |
+| `std` | O(1), stable | **→ 0 = representation collapse** |
+| `cos` | rising toward 1 | flat near 0 = no directional structure |
+| `top1` | rising above `chance` | at chance after several epochs = not learning |
+| `grad` unclipped | O(0.1–1), no spikes | persistently ≫1 = lr too high; →0 = dead |
+
+**The L1 baselines are what make `VAL` interpretable** (verified empirically by
+`--offline`, not asserted):
+
+```
+~1.13  predicting an unrelated latent   -- chance
+~0.80  predicting zeros                 -- the degenerate solution
+<0.80  genuinely predicting structure
+```
+
+**The trap `std` exists to catch:** a fully collapsed model scores L1 **0.746**,
+which is *better* than the 0.798 zeros baseline. Loss alone reads as progress.
+Only `std → 0` exposes it. **Never judge the loss without looking at `std`.**
+
+**Judging "is training working":** by epoch 2–3 you want `VAL` falling, `std`
+holding steady, and `top1` above chance. If `VAL` is flat while train falls,
+you are memorising — the dataset is too small, and more compute will not fix it.
+
 ### 4.1 Stage 1 throughput and memory
 
 Sweep **4 → 8 → 16**, then **batch 8 again as a drift control**. If the two
