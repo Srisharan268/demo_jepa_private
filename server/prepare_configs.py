@@ -37,6 +37,15 @@ import yaml
 _ap = argparse.ArgumentParser(description="Write stage 1/2 training configs.")
 _ap.add_argument("--gpus", type=int, default=4, help="GPUs in the run (world size)")
 _ap.add_argument("--epochs", type=int, default=None, help="override epochs for both stages")
+# WSD's total length is epochs * ipe, so lowering ipe and raising epochs by the
+# same factor is the SAME schedule -- but CHECKPOINT_FREQ=1 saves latest.pt every
+# epoch, so it also checkpoints proportionally more often. That is the cheap way
+# to bound how much a crash costs: `--epochs 12 --ipe 100` == `--epochs 4 --ipe
+# 300` for the optimiser, and gives 12 checkpoints instead of 4.
+# warmup/anneal are ABSOLUTE (in epochs), not fractions -- scale them yourself.
+_ap.add_argument("--ipe", type=int, default=None, help="iterations per epoch (checkpoint granularity)")
+_ap.add_argument("--warmup", type=int, default=None, help="warmup epochs (absolute)")
+_ap.add_argument("--anneal", type=int, default=None, help="anneal epochs (absolute)")
 _ap.add_argument("--smoke", action="store_true",
                  help="tiny plumbing run: batch 1, accum 1, epochs 1, ipe 20")
 ARGS = _ap.parse_args()
@@ -158,6 +167,26 @@ def report(tag, cfg, accum):
         FATAL.append(tag)
 
 
+
+def apply_schedule_overrides(cfg):
+    """Apply --ipe/--warmup/--anneal, and sanity-check the WSD phases."""
+    o = cfg["optimization"]
+    if ARGS.ipe:
+        o["ipe"] = ARGS.ipe
+    for key in ("warmup", "anneal"):
+        val = getattr(ARGS, key)
+        if val is not None:
+            o[key] = val
+    # WSDSchedule sets T_max = total - warmup - anneal (schedulers.py:19). If the
+    # phases exceed the run, the flat phase vanishes and the LR curve is not what
+    # you think it is.
+    total = o["epochs"]
+    if o.get("warmup", 0) + o.get("anneal", 0) >= total:
+        sys.exit(f"ERROR: warmup {o.get('warmup')} + anneal {o.get('anneal')} >= "
+                 f"epochs {total}. No flat phase would remain -- WSD degenerates.")
+    return cfg
+
+
 # ---------------------------------------------------------------- Stage 1 ---
 c = load(S1)
 expect(c, ["data", "batch_size"], 16, S1)
@@ -181,8 +210,10 @@ c["optimization"]["accum_steps"] = S1_ACCUM
 if ARGS.smoke:
     # Plumbing only: 20 optimizer steps, no LR schedule to speak of.
     c["optimization"].update(epochs=1, ipe=20, warmup=0, anneal=0)
-elif ARGS.epochs:
-    c["optimization"]["epochs"] = ARGS.epochs
+else:
+    if ARGS.epochs:
+        c["optimization"]["epochs"] = ARGS.epochs
+    apply_schedule_overrides(c)
 c["meta"]["pretrain_checkpoint"] = STAGE0_CKPT
 c["meta"]["dreamer_predictor_checkpoint"] = None
 save(S1, c)
@@ -207,8 +238,10 @@ d["data"]["batch_size"] = S2_BATCH
 d["data"]["num_workers"] = 2 if ARGS.smoke else NUM_WORKERS
 if ARGS.smoke:
     d["optimization"].update(epochs=1, ipe=20, warmup=0, anneal=0)
-elif ARGS.epochs:
-    d["optimization"]["epochs"] = ARGS.epochs
+else:
+    if ARGS.epochs:
+        d["optimization"]["epochs"] = ARGS.epochs
+    apply_schedule_overrides(d)
 # Stage 2 needs no accumulation, so app/vjepa_2_1_dreamer_ac/train.py is untouched.
 d["meta"]["pretrain_checkpoint"] = STAGE0_CKPT
 d["meta"]["dreamer_predictor_checkpoint"] = STAGE1_CKPT

@@ -290,6 +290,44 @@ collapse, the classic JEPA failure mode — not convergence. Plot from
 
 ---
 
+## 4.7 Persistence — do this BEFORE launching anything long
+
+A rented instance can be reclaimed, and your SSH can drop. Two different
+problems, two different answers:
+
+**Metrics — wandb, already wired.** `wandb.log` in train.py records `lr`, `wd`,
+`grad_norm_*` and `mem` (series the CSV does not keep) and uploads live. Log in
+with YOUR account and leave `WANDB_MODE` unset.
+
+**Logs and checkpoints — pull them, from your own machine:**
+
+```bash
+# on the 4080, NOT on the rented box
+bash server/pull_artifacts.sh root@<vast-host> <port>
+```
+
+Pull rather than push: vast.ai exposes an SSH host:port, while the 4080 is
+behind tailscale and usually unreachable from inside a rented container.
+Pulling also installs nothing on hardware you are paying for.
+
+Logs sync every 60s (kilobytes), checkpoints every 15 min (~9 GB each). Start it
+in a second terminal before the first long run and leave it going.
+
+### Why checkpoints are 9 GB, and the easy 45% saving
+
+Each `latest.pt` is encoder **4.05 GB** + dreamer_predictor **1.70 GB** + Adam
+state **3.40 GB** (`train.py:330`). With `unfreeze_vit: False` only the dreamer
+is in the optimiser (`utils.py:246`), and **the encoder is frozen** — so those
+4.05 GB are byte-identical every save and already sit in
+`vjepa2_ac_repacked.pt`.
+
+Stage 2 only reads `checkpoint["dreamer_predictor"]`, so a slim checkpoint would
+be enough for everything downstream. **Not changed today** — it touches upstream
+`train.py` and the rehearsal does not need it. Worth doing before the multi-day
+lab run, where it turns a 9 GB write per epoch into 1.7 GB.
+
+---
+
 ## 5. Before you tear down
 
 - [ ] `s1_b8.log`, `s1_b16.log`, `s1_b8_control.log`, `s2_b2.log`, `s2_b4.log`
