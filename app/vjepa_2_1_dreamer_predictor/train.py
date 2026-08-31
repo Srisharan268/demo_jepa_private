@@ -405,6 +405,7 @@ def main(args, resume_preempt=False):
             return None
         dreamer_predictor.eval()
         tot, n = 0.0, 0
+        preds, tgts = [], []
         with torch.no_grad():
             for i, sample in enumerate(val_loader):
                 if val_batches > 0 and i >= val_batches:
@@ -417,9 +418,40 @@ def main(args, resume_preempt=False):
                     tr_feat = forward_feature_eval(encoder, tr)
                     out = dreamer_predictor(xt=c_feat, yt=cr_feat, yt_plus_1=tr_feat)
                     tot += float(F.l1_loss(out, t_feat, reduction="mean"))
+                # Mean-pool tokens -> one vector per sample, kept on CPU in fp32.
+                # (N, D) is tiny, so this costs nothing next to the forward pass.
+                preds.append(out.detach().float().mean(dim=1).cpu())
+                tgts.append(t_feat.detach().float().mean(dim=1).cpu())
                 n += 1
         dreamer_predictor.train()
-        return tot / max(n, 1)
+        return tot / max(n, 1), _retrieval(preds, tgts)
+
+    def _retrieval(preds, tgts):
+        """Top-1/top-5 retrieval of the true target latent among all val targets.
+
+        Complements val loss: L1 is an absolute distance whose scale is only
+        interpretable against the ~0.80/~1.13 baselines, whereas retrieval is a
+        percentage against an explicit chance rate (1/N). This is the metric the
+        paper's stage-1 evaluation reports and HANDOFF §8 makes the primary
+        deliverable, so watching it during training beats discovering it after.
+        """
+        if not preds:
+            return None
+        p = F.normalize(torch.cat(preds), dim=-1)
+        t = F.normalize(torch.cat(tgts), dim=-1)
+        N = p.size(0)
+        if N < 2:
+            return None
+        sim = p @ t.T                       # (N, N) cosine, row i vs every target
+        truth = torch.arange(N)
+        k = min(5, N)
+        topk = sim.topk(k, dim=-1).indices
+        return {
+            "n": N,
+            "top1": float((topk[:, 0] == truth).float().mean()),
+            "top5": float((topk == truth[:, None]).any(dim=-1).float().mean()),
+            "chance": 1.0 / N,
+        }
 
     def forward_feature_eval(frame_encoder, frame):
         f = frame_encoder(frame)
@@ -667,11 +699,18 @@ def main(args, resume_preempt=False):
 
         # -- Validation
         if val_loader is not None and (epoch + 1) % val_freq == 0:
-            _vl = run_validation()
+            _vl, _ret = run_validation()
             logger.info("epoch %d  train %.4f  VAL %.4f  (chance ~1.13, zeros ~0.80)"
                         % (epoch + 1, loss_meter.avg, _vl))
-            wandb.log({"epoch": epoch + 1, "val_loss": _vl,
-                       "train_minus_val": loss_meter.avg - _vl})
+            _wl = {"epoch": epoch + 1, "val_loss": _vl,
+                   "train_minus_val": loss_meter.avg - _vl}
+            if _ret:
+                logger.info("           retrieval top1 %.3f  top5 %.3f  "
+                            "(chance %.3f, n=%d)"
+                            % (_ret["top1"], _ret["top5"], _ret["chance"], _ret["n"]))
+                _wl.update({"val_top1": _ret["top1"], "val_top5": _ret["top5"],
+                            "val_chance": _ret["chance"]})
+            wandb.log(_wl)
 
         # -- Save Checkpoint
         logger.info("avg. loss %.3f" % loss_meter.avg)
