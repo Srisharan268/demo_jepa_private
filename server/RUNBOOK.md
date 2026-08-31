@@ -16,23 +16,30 @@ report — it is instrumentation for deciding how to spend real money.
 
 | | |
 |---|---|
-| Hardware | vast.ai RTX PRO 6000 Blackwell **96 GB**, ~$1/hr |
-| Budget | ₹1000 ≈ $12 ≈ 12 h. **Target spend 4–5 h; keep the rest as reserve.** |
+| Hardware | vast.ai **RTX 5090, 32 GB, ~107 TFLOPS** |
+| Budget | ₹1000 ≈ $12. **Target spend 4–5 h; keep the rest as reserve.** |
 | Lab card (the real target) | RTX PRO 4500 Blackwell **32 GB**, same architecture |
 
-96 GB means **no memory hacks**. `patch_16gb.py` is deliberately deleted from
-this branch — if you find yourself wanting it, you are on the wrong branch.
-Everything runs full fp32, the configuration the lab card will actually use.
+### Why a 5090 rather than a 96 GB card
 
-### Why 96 GB when the lab card is 32 GB
+**Because it has exactly the lab card's 32 GB.** Whatever batch fits the 5090 is
+what fits the lab card — you measure the real constraint instead of extrapolating
+around it. Both are Blackwell, so the spec-ratio step in §4.5 stays honest.
 
-Two reasons. First, it removes memory as a confound so throughput is measured
-cleanly. Second, batch 16 (the paper's per-GPU batch) has **never been run** —
-§6 predicts 34–47 GB from meta-tensor analysis and that has never been checked
-against reality. 96 GB settles it.
+The 96 GB RTX PRO 6000 is only ~11% faster on compute (119 vs 107 TFLOPS); its
+advantage is memory, and memory is not what you are short of.
 
-You then scale to the 32 GB card by spec ratio (§4.5). That is an estimate, and
-§12 of HANDOFF is unkind about estimates — label it as one.
+There is also a failure mode worth finding cheaply: §6 predicts batch 8 needs
+**24–27 GB**, from meta-tensor analysis that has never been checked against
+reality. If that is optimistic and batch 8 does NOT fit 32 GB, the entire lab
+plan is wrong. Far better to learn that on a cheap rental than on the lab card.
+
+**What you give up:** you cannot measure batch 32, so you cannot answer "would a
+bigger rented card beat the lab card". Secondary — the lab card cannot run
+batch 32 either.
+
+32 GB means **no memory hacks anyway**: `patch_16gb.py` is deliberately deleted
+from this branch. Everything runs full fp32, exactly as the lab card will.
 
 ---
 
@@ -41,14 +48,14 @@ You then scale to the 32 GB card by spec ratio (§4.5). That is an estimate, and
 **Do not rent until this is done.** Throughput measured on the current 18-episode
 smoke set is invalid:
 
-- 12 training pairs ÷ batch 16 = **0 batches** → `prepare_configs.py` exits 1
+- 12 training pairs < batch 16 → **0 batches** → `prepare_configs.py` exits 1
   (correctly — `drop_last=True` would hang silently, HANDOFF §6)
 - batch 8 gives **1 batch/epoch** → the loader hits `StopIteration` and rebuilds
   every single step. That inflates `data` time and pollutes `iter`.
 
-**Minimum: ~640 paired episodes in `data/train`** (20 batches/epoch at batch 32,
-the largest size in the §4.1 sweep). Below ~320 you cannot test batch 32 at all.
-Ideal is the full 4-task x 800-pair set, which is also the real run's dataset.
+**Minimum: ~320 paired episodes in `data/train`** (20 batches/epoch at batch 16,
+the largest size in the §4.1 sweep). Ideal is the full 4-task x 800-pair set,
+which is also the real run's dataset — collect that if time allows.
 
 Collect on the **4080 box** — this is CPU/sim work, needs no GPU, costs nothing,
 and runs while you do everything else:
@@ -98,11 +105,25 @@ That checkpoint **must** carry the §5 norm rename — this branch's
 
 **2.3 Copy your collected data** (`data/train`, `data/val`) from the 4080 too.
 
-**2.4 wandb.** Use **your own** account this time. (The 4080's `~/.netrc` holds
-someone else's credentials — HANDOFF §5b.) `wandb login`, then leave
-`WANDB_MODE` unset so the existing `wandb.log` calls actually record `lr`, `wd`,
-`grad_norm_*` and `mem` — series the CSV does not keep. If the instance dies,
-the data is already uploaded.
+**2.4 wandb — set this up first, it is your only live backup.**
+
+Use **your own** account. (The 4080's `~/.netrc` holds someone else's
+credentials — HANDOFF §5b.) On the rented box:
+
+```bash
+pip install wandb && wandb login          # paste your key from wandb.ai/authorize
+unset WANDB_MODE                          # the run scripts default it to disabled
+```
+
+`train.py` already calls `wandb.log` every 10 iterations with `loss`, `lr`,
+`wd`, `grad_norm_unclipped`, `grad_norm_clipped`, `mem`, `iter`, `gpu`, `data`.
+**Four of those (`lr`, `wd`, both grad norms) are not written to the CSV at
+all** — without wandb they exist only in terminal scrollback.
+
+Verify it is live before starting anything long: run one short config and check
+the run appears at wandb.ai. `run_stage1.sh` and `run_stage2.sh` contain
+`WANDB_MODE="${WANDB_MODE:-disabled}"`, so exporting `WANDB_MODE=online`
+explicitly is the reliable way to override it.
 
 ---
 
@@ -157,8 +178,8 @@ paper's **128**. The lr (`4.25e-4`), warmup and WSD schedule are tuned for it �
 changing the global batch changes the optimisation problem, not just the speed.
 
 ```
-batch  8 × accum 16 = 128     fits 32GB   (the lab card)
-batch 32 × accum  4 = 128     fits 96GB   (rented)
+batch  8 × accum 16 = 128     target: fits 32GB (5090 AND the lab card)
+batch  4 × accum 32 = 128     fallback if batch 8 does not fit
 ```
 
 **Both do exactly 128 sample-forwards per optimizer step, and the same FLOPs.**
@@ -170,15 +191,23 @@ accum is 1 and divisibility is irrelevant).
 
 ### 4.1 Stage 1 throughput and memory
 
-Sweep **8 → 16 → 32**, then **batch 8 again as a drift control**. If the two
+Sweep **4 → 8 → 16**, then **batch 8 again as a drift control**. If the two
 batch-8 numbers disagree, the box is not stable and nothing else here is
-trustworthy. Add **48** (measure-only) if 32 leaves plenty of headroom.
+trustworthy. On 32 GB, batch 16 is expected to OOM — that is the ceiling being
+recorded, not a problem.
 
 **Do the whole sweep with one command:**
 
 ```bash
-python server/sweep_memory.py --stages 1 2 --batches 8 16 32 --fits 32
+python server/sweep_memory.py --stages 1 2 --batches 4 8 16 --fits 32
 ```
+
+On a 32 GB card, expect **batch 16 to OOM** (§6 predicts 34–47 GB). That is the
+point: an OOM is a recorded result that establishes the ceiling, not a failure.
+Each config is a separate subprocess, so one OOM does not stop the sweep. The
+script also refuses to start if anything already holds the GPU, and waits for
+memory to clear between configs — a crashed run leaving memory held is what
+corrupted measurements on the 4080.
 
 It runs each config for 10 optimizer steps, samples true VRAM from `nvidia-smi`
 while the run is live, and prints a table ending in a **fits 32GB?** column.
@@ -218,7 +247,7 @@ is trustworthy.
 
 Record from the **last** `log_stats` line (steady state, not step 0):
 
-| | b8 | b16 | b32 | b8 control |
+| | b4 | b8 | b16 | b8 control |
 |---|---|---|---|---|
 | `gpu` ms | | | | |
 | `mem` MB | | | | |

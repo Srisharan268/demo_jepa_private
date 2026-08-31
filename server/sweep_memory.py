@@ -130,7 +130,7 @@ def run_one(stage, batch, ipe, env):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--batches", type=int, nargs="+", default=[8, 16, 32])
+    p.add_argument("--batches", type=int, nargs="+", default=[4, 8, 16])
     p.add_argument("--stages", type=int, nargs="+", default=[1])
     p.add_argument("--ipe", type=int, default=10,
                    help="optimizer steps per config; >1 required for Adam state")
@@ -146,10 +146,37 @@ def main():
     # which would make these numbers look better than a default-configured run.
     # Measure the pessimistic case; enable it for real runs if you want the margin.
 
+    def gpu_busy_mb():
+        """Total VRAM held by ANY compute process. Must be ~0 between configs."""
+        try:
+            r = subprocess.run(
+                ["nvidia-smi", "--query-compute-apps=used_memory",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=10)
+            return sum(int(x) for x in r.stdout.split() if x.strip().isdigit())
+        except Exception:
+            return -1
+
+    busy = gpu_busy_mb()
+    if busy > 500:
+        sys.exit(f"ERROR: {busy} MB already held on the GPU before starting.\n"
+                 f"Contention invalidates every number here (see HANDOFF §5b).\n"
+                 f"Check: nvidia-smi --query-compute-apps=pid,used_memory --format=csv")
+
     results = {}
     for stage in args.stages:
         for batch in args.batches:
             print(f"\n=== stage {stage}, batch {batch} ===", flush=True)
+            # A crashed run can leave memory held (this happened repeatedly on
+            # the 4080). If it has not cleared, the NEXT config measures a
+            # smaller card than it thinks and may OOM spuriously.
+            for _ in range(10):
+                if gpu_busy_mb() <= 500:
+                    break
+                time.sleep(2)
+            else:
+                print(f"  WARNING: {gpu_busy_mb()} MB still held from a previous "
+                      f"run -- this config's numbers may be wrong", flush=True)
             r = run_one(stage, batch, args.ipe, env)
             results[(stage, batch)] = r
             if "skipped" in r:
