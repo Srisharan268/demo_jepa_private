@@ -187,6 +187,13 @@ def main(args, resume_preempt=False):
         ("%d", "iter-time(ms)"),
         ("%d", "gpu-time(ms)"),
         ("%d", "dataload-time(ms)"),
+        # These reach wandb and the console but had no local sink. Without them
+        # here, a failed wandb login means std/cos/lr/grad survive only in
+        # scrollback -- and scrollback dies with a rented instance.
+        ("%.5f", "lr"),
+        ("%.5f", "grad-unclipped"),
+        ("%.5f", "pred-std"),
+        ("%.5f", "cos-sim"),
     )
 
     if rank == 0:
@@ -651,7 +658,9 @@ def main(args, resume_preempt=False):
 
             # -- Logging
             def log_stats():
-                csv_logger.log(epoch + 1, itr, loss, iter_elapsed_time_ms, gpu_etime_ms, data_elapsed_time_ms)
+                csv_logger.log(epoch + 1, itr, loss, iter_elapsed_time_ms,
+                               gpu_etime_ms, data_elapsed_time_ms, _new_lr,
+                               _grad_norm_unclipped, _pred_std, _cos)
                 if (itr % log_freq == 0) or (itr == ipe - 1) or np.isnan(loss) or np.isinf(loss):
                     logger.info(
                         "[%d, %5d] loss: %.3f "
