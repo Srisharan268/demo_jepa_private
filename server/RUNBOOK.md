@@ -174,12 +174,41 @@ Sweep **8 → 16 → 32**, then **batch 8 again as a drift control**. If the two
 batch-8 numbers disagree, the box is not stable and nothing else here is
 trustworthy. Add **48** (measure-only) if 32 leaves plenty of headroom.
 
+**Do the whole sweep with one command:**
+
 ```bash
-python server/set_batch.py --batch 8  --measure && bash server/run_stage1.sh 2>&1 | tee s1_b8.log
-python server/set_batch.py --batch 16 --measure && bash server/run_stage1.sh 2>&1 | tee s1_b16.log
-python server/set_batch.py --batch 32 --measure && bash server/run_stage1.sh 2>&1 | tee s1_b32.log
-python server/set_batch.py --batch 8  --measure && bash server/run_stage1.sh 2>&1 | tee s1_b8_control.log
+python server/sweep_memory.py --stages 1 2 --batches 8 16 32 --fits 32
 ```
+
+It runs each config for 10 optimizer steps, samples true VRAM from `nvidia-smi`
+while the run is live, and prints a table ending in a **fits 32GB?** column.
+
+Why 10 steps and not one: **Adam allocates `exp_avg`/`exp_avg_sq` lazily on the
+first `optimizer.step()`** — that is precisely where stage 1 OOMed on the 16GB
+box (`torch.zeros_like` in `adam.py:_init_group`). A single step never reaches
+peak. Ten is plenty; a full epoch is wasted money.
+
+Why two memory numbers:
+
+| | what it is |
+|---|---|
+| `torch_alloc` | `torch.cuda.max_memory_allocated()` — PyTorch tensors only. This is train.py's `mem` |
+| `nvidia_smi` | true process VRAM: adds the CUDA context (~0.3–0.5 GB), cuDNN workspaces, allocator reserved-but-unused |
+
+**`nvidia_smi` is what decides whether a config fits a card.** `torch_alloc` runs
+1–3 GB lower; planning against it will OOM you on the lab card.
+
+An OOM in the sweep is a **result**, not a failure — it establishes the ceiling.
+The script records it and carries on.
+
+Then re-run batch 8 as a **drift control**:
+
+```bash
+python server/sweep_memory.py --batches 8 --stages 1
+```
+
+If it disagrees with the first batch-8 row, the box is unstable and nothing here
+is trustworthy.
 
 **The question this answers:** does `ms/sample` keep falling as batch grows?
 
