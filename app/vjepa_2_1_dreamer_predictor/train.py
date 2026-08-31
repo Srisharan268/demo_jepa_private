@@ -190,7 +190,15 @@ def main(args, resume_preempt=False):
     )
 
     if rank == 0:
-        wandb.init(project=project, name=name)
+        # The config ships `name: test`, so every run would be called "test" and
+        # a batch-size sweep would produce N indistinguishable runs. Suffix the
+        # things that actually vary, and log the full config so you can tell
+        # afterwards WHICH settings produced a curve.
+        _bs = args["data"]["batch_size"]
+        _ac = args["optimization"].get("accum_steps", 1)
+        _run = f"{name}-b{_bs}xa{_ac}-{time.strftime('%m%d-%H%M%S')}"
+        wandb.init(project=project, name=_run, config=args)
+        logger.info(f"wandb run: {_run}  (mode={os.environ.get('WANDB_MODE', 'online')})")
     else:
         wandb.init(mode="disabled")
 

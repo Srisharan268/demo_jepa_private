@@ -120,10 +120,27 @@ unset WANDB_MODE                          # the run scripts default it to disabl
 **Four of those (`lr`, `wd`, both grad norms) are not written to the CSV at
 all** — without wandb they exist only in terminal scrollback.
 
-Verify it is live before starting anything long: run one short config and check
-the run appears at wandb.ai. `run_stage1.sh` and `run_stage2.sh` contain
-`WANDB_MODE="${WANDB_MODE:-disabled}"`, so exporting `WANDB_MODE=online`
-explicitly is the reliable way to override it.
+**Keep in mind during the session:**
+
+- **`WANDB_MODE` defaults to `disabled` in the run scripts** (`${WANDB_MODE:-disabled}`).
+  Export `WANDB_MODE=online` explicitly, or you will discover at teardown that
+  nothing was recorded. `sweep_memory.py` sets `disabled` on purpose — sweep
+  configs are noise, not experiments.
+- **Check the startup line.** train.py now logs
+  `wandb run: <name>-b8xa16-MMDD-HHMMSS (mode=online)`. If it says
+  `mode=disabled`, stop and fix it before the run.
+- **Run names are now unique** and carry batch/accum plus a timestamp. The
+  config ships `name: test`, so without this a sweep produced N runs all called
+  "test". The full config is logged too, so you can tell afterwards which
+  settings produced a curve.
+- **wandb is your only live backup.** The console log and CSV die with the
+  instance. Still `tee` every run and `scp` the logs at teardown — belt and
+  braces.
+- **Offline fallback:** if login fails or the box has no outbound network, use
+  `WANDB_MODE=offline`. It writes to `./wandb/` locally; sync later with
+  `wandb sync wandb/offline-run-*`. Do not just fall back to `disabled`.
+- **`std`, `cos`, `VAL`, `top1/top5`, `lr`, `wd`, `grad` reach wandb and the
+  console but NOT the CSV.** Without wandb they exist only in scrollback.
 
 ---
 
