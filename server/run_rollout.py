@@ -100,10 +100,42 @@ def wait_for_server(server_log, proc, timeout=180):
     return False
 
 
-def kill_stale():
+def port_free(port=PORT, host="127.0.0.1"):
+    """True if nothing is bound to the port.
+
+    Binding is the only reliable test. A connect() probe cannot be used here --
+    server.py accepts exactly one client, so probing would consume its accept()
+    (see wait_for_server). Binding and immediately closing is side-effect free.
+    """
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
+def kill_stale(timeout=60):
+    """Kill leftover sim processes and WAIT for the port to actually clear.
+
+    A fixed sleep is not enough: pkill returns immediately, the process takes a
+    moment to die, and the listening socket then sits in TIME_WAIT. server.py
+    does not set SO_REUSEADDR, so it cannot rebind until the kernel releases it
+    and dies with 'OSError: [Errno 98] Address already in use'. On a 40-episode
+    loop the server restarts 40 times, so this fires repeatedly.
+    """
     subprocess.run("pkill -f coppeliaSim; pkill -f rlbench_tools/server.py",
                    shell=True, stderr=subprocess.DEVNULL)
-    time.sleep(2)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if port_free():
+            return True
+        time.sleep(2)
+    print(f"  WARNING: port {PORT} still bound after {timeout}s -- "
+          f"the next server launch will likely fail", flush=True)
+    return False
 
 
 def run_episode(ep, args):
