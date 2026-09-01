@@ -50,6 +50,13 @@ _ap.add_argument("--ipe", type=int, default=None, help="iterations per epoch (ch
 # Each checkpoint is ~9GB, so set this against available disk, not habit.
 _ap.add_argument("--save-every", type=int, default=None,
                  help="keep e{N}.pt every N epochs (~9GB each); upstream 25")
+# Stage 2 has NO accum_steps support (app/vjepa_2_1_dreamer_ac/train.py is
+# untouched upstream), so its global batch is batch_size x world_size --
+# there is no way to reach the paper's 16 on one GPU except by fitting
+# batch 16 outright. The default cap of 4 is an UNVALIDATED guess; run
+# sweep_memory.py --stages 2 and set this to whatever actually fits.
+_ap.add_argument("--s2-batch", type=int, default=None,
+                 help="stage 2 per-GPU batch (16 = paper global on 1 GPU)")
 _ap.add_argument("--warmup", type=int, default=None, help="warmup epochs (absolute)")
 _ap.add_argument("--anneal", type=int, default=None, help="anneal epochs (absolute)")
 _ap.add_argument("--smoke", action="store_true",
@@ -253,7 +260,9 @@ d["data"]["data_type"] = "sim"
 # needed to hit 16 may not fit; cap it and report the shortfall honestly.
 S2_BATCH_IDEAL = max(1, PAPER_GLOBAL_S2 // N_GPUS)
 S2_BATCH_CAP = 4                      # per-GPU memory ceiling for stage 2
-S2_BATCH = 1 if ARGS.smoke else min(S2_BATCH_IDEAL, S2_BATCH_CAP)
+S2_BATCH = (1 if ARGS.smoke else
+            ARGS.s2_batch if ARGS.s2_batch else
+            min(S2_BATCH_IDEAL, S2_BATCH_CAP))
 d["data"]["batch_size"] = S2_BATCH
 d["data"]["num_workers"] = 2 if ARGS.smoke else NUM_WORKERS
 if ARGS.smoke:
