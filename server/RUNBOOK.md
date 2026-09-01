@@ -361,6 +361,51 @@ Record from the **last** `log_stats` line (steady state, not step 0):
 Then pick the real-run config: the largest batch that fits **32 GB** with
 headroom, and `set_batch.py` without `--measure` to restore global batch 128.
 
+### 4.1b Apply the sweep result — the config for every run after this
+
+Read the `fits 32GB?` column. Take the **largest YES** per stage, then write the
+real config once:
+
+```bash
+python server/prepare_configs.py --gpus 1 --s2-batch <largest stage-2 YES>        --epochs <from §4.6> --ipe 100 --warmup <~25%> --anneal <~30%> --save-every 4
+python server/set_batch.py --batch <largest stage-1 YES>      # NO --measure
+```
+
+**Order matters:** `prepare_configs.py` reads its baseline from `git HEAD` and
+rewrites the file, so `set_batch.py` must come second or its batch is discarded.
+Omitting `--measure` is what makes `set_batch.py` restore `accum_steps` and the
+real schedule instead of the timing stub.
+
+**Stage 1** — `set_batch.py` derives `accum_steps` to hold global batch at the
+paper's 128, and refuses sizes that do not divide it:
+
+| batch | accum | global |
+|---|---|---|
+| 16 | 8 | 128 |
+| **8** | **16** | **128** ← most likely |
+| 4 | 32 | 128 |
+
+**Stage 2 is different — it has NO `accum_steps` support** (`app/vjepa_2_1_dreamer_ac/train.py`
+is untouched upstream), so global batch is just `batch_size × world_size`. There
+is no way to reach the paper's 16 on one GPU except by fitting batch 16 outright:
+
+| `--s2-batch` | global | vs paper (16) |
+|---|---|---|
+| 16 | 16 | **matches** |
+| 8 | 8 | half — a deviation to state |
+| 4 | 4 | quarter — state it |
+
+The old hardcoded cap of 4 was a guess, never measured. If 16 fits, use it.
+
+Confirm before launching:
+
+```bash
+python -c "import yaml; [print(f, yaml.safe_load(open(f))['data']['batch_size'], yaml.safe_load(open(f))['optimization'].get('accum_steps',1)) for f in ('configs/train/vjepa_2_1_dreamer_predictor.yaml','configs/train/vjepa_2_1_dreamer_ac.yaml')]"
+```
+
+Stage 1 must print `batch × accum = 128`. If a later `prepare_configs.py` run
+resets stage 1's batch, re-run `set_batch.py`.
+
 ### 4.2 Does §6's memory analysis survive contact?
 
 §6 predicts **34–47 GB at batch 16** and 24–27 GB at batch 8, from meta-tensor
