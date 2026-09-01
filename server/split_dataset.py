@@ -36,14 +36,46 @@ def main():
     p.add_argument("--val-dir", default=DEFAULT_VAL)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--move", action="store_true", help="move instead of copy (saves disk)")
+    p.add_argument("--force", action="store_true",
+                   help="allow deleting a destination that already holds data")
     args = p.parse_args()
 
     if not os.path.isdir(args.src):
-        sys.exit(f"ERROR: source not found: {args.src}")
+        sys.exit(f"ERROR: source not found: {args.src}\n"
+                 "Pass --src pointing at your COLLECTED episodes. The default\n"
+                 "is only the small in-repo smoke extract.")
 
     tasks = sorted(d for d in os.listdir(args.src) if os.path.isdir(os.path.join(args.src, d)))
     if not tasks:
         sys.exit(f"ERROR: no task directories under {args.src}")
+
+    # This used to rmtree train/ and val/ unconditionally, then repopulate from
+    # --src. If --src pointed anywhere other than where the real data lived,
+    # that DESTROYED the dataset -- and it did: 402 freshly collected pairs were
+    # wiped and replaced by the 18-episode in-repo smoke extract, because --src
+    # defaults to data/rlbench_data.
+    # Refuse to delete a non-empty destination unless told explicitly.
+    def _count(root):
+        n = 0
+        for _dp, _dn, files in os.walk(root):
+            n += sum(1 for f in files if f.endswith((".hdf5", ".h5")))
+        return n
+
+    src_n = _count(args.src)
+    for root in (args.train, args.val_dir):
+        have = _count(root)
+        if have and not args.force:
+            sys.exit(
+                "ERROR: refusing to delete existing data.\n"
+                f"  {root}\n"
+                f"    holds {have} episode file(s) and would be DELETED.\n"
+                f"  --src {args.src}\n"
+                f"    holds {src_n}.\n"
+                "\n"
+                "  If the destination is where your collected data actually is, this\n"
+                "  would destroy it. Point --src at it, or move it somewhere safe.\n"
+                "  Re-run with --force once you are certain."
+            )
 
     for root in (args.train, args.val_dir):
         shutil.rmtree(root, ignore_errors=True)
