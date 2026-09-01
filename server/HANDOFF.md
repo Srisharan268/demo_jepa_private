@@ -375,6 +375,16 @@ sim works, rollout→gif proven. What remains:
 **Deferred improvements — worth doing before the FINAL lab run, not before a
 rehearsal:**
 
+- **Stage 2 has NO validation split.** Its train loss (0.102 at the rehearsal)
+  cannot distinguish a learned dynamics model from memorisation of 362
+  episodes. Stage 1's Tier 1/2 metrics (val loss, collapse monitor, cosine,
+  retrieval) exist only in `app/vjepa_2_1_dreamer_predictor/train.py`. Port them
+  to `vjepa_2_1_dreamer_ac/train.py` -- the sloss/jloss split is useful but is
+  still train-only. Until then, the held-out ROLLOUT is stage 2's only real
+  validation, which is a weak and expensive substitute.
+- **Rollouts run against a RANDOM scene** (see §5c). Fix before trusting any
+  success rate.
+
 - **Repack stage 0 in fp32.** The current `vjepa2_ac_repacked.pt` was made with
   `--bf16`. Harmless for the ENCODER (frozen, and run under bf16 autocast
   anyway, so bf16 storage costs one rounding at load instead of one per
