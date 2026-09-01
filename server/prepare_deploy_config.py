@@ -1,13 +1,27 @@
 #!/usr/bin/env python3
 """Write the deploy/rollout config.
 
-Keeps the upstream MPC settings, which ARE the paper's:
+Keeps the upstream repo's MPC settings:
 
-    samples: 200   cem_steps: 50   topk: 10   rollout: 1
+    samples: 200   cem_steps: 50   topk: 10   rollout: 1   maxnorm: 0.1
 
-That is 200 x 50 = 10,000 predictor forwards per environment step. It is slow
-by design -- do not trim it to make rollouts finish faster unless you intend to
-report a reduced-compute result, in which case say so explicitly.
+*** THESE ARE NOT THE PAPER'S VALUES. *** Checked against arXiv 2605.20811 on
+2026-09-02: Algorithm 1 (Appendix B) defines population size N, elites K,
+momentum beta, horizon H and iterations L, but states NO numeric values for any
+of them. Tables C.1-C.3 cover architecture, not planning. `maxnorm` does not
+appear in the paper at all. An earlier version of this file claimed otherwise;
+it was wrong.
+
+So these are upstream defaults, and changing them is a deviation from the REPO,
+not from the paper. That matters: at our data scale the per-step action deltas
+are 0.004-0.011 m, so maxnorm 0.1 puts the entire CEM search 10-20x outside the
+training distribution -- measured 14/14 IK failures at 0.1 versus 0/4 at 0.01.
+Tuning an unspecified hyperparameter to the data is legitimate; say what you
+used and why.
+
+samples x cem_steps = 10,000 predictor forwards per environment step, and MPC
+replans every step. Note rollout: 1 means a ONE-STEP planning horizon -- greedy,
+not lookahead.
 
 Paths are repo-relative and the reference demo is auto-selected from the
 held-out split, so there is normally nothing to edit.
@@ -76,13 +90,15 @@ def main():
                  f"Are you inside the repo, and is {CFG} committed?")
     c = yaml.safe_load(blob.stdout)
 
-    # Guard: these are the paper's MPC values. If upstream differs, stop and look.
+    # Guard against upstream drift -- NOT a claim that these are the paper's
+    # values (the paper states none; see the module docstring).
     mpc = c["deploy"]["mpc"]
     expected = {"samples": 200, "cem_steps": 50, "topk": 10, "rollout": 1}
     for k, v in expected.items():
         if mpc.get(k) != v:
-            sys.exit(f"ERROR: {CFG}: deploy.mpc.{k} is {mpc.get(k)!r}, expected {v!r}. "
-                     f"Upstream changed -- confirm before running.")
+            sys.exit(f"ERROR: {CFG}: deploy.mpc.{k} is {mpc.get(k)!r}, expected the "
+                     f"upstream default {v!r}. Upstream changed, or the committed "
+                     f"config was edited -- confirm before running.")
 
     c["folder"] = OUT_FOLDER
     c["meta"]["pretrain_checkpoint"] = args.deploy_ckpt
@@ -100,7 +116,8 @@ def main():
                      ("stage 1 ckpt", args.stage1_ckpt),
                      ("reference h5", reference_h5)):
         print(f"  {lbl:14s} {val}  [{'ok' if os.path.exists(val) else 'MISSING'}]")
-    print(f"  mpc            {dict(mpc)}  (paper values, unchanged)")
+    print(f"  mpc            {dict(mpc)}")
+    print(f"                 ^ upstream repo defaults, NOT stated in the paper")
     print(f"  max_steps      {args.max_steps}")
     print(f"\nReference demo is held-out ({REFERENCE_ROBOT}); the policy drives the")
     print(f"other embodiment. That cross-embodiment gap is the thing being measured.")
