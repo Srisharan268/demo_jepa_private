@@ -614,6 +614,15 @@ def main(args, resume_preempt=False):
                     "loss": loss_meter.avg,
                     "jloss": jloss_meter.avg,
                     "sloss": sloss_meter.avg,
+                    # sloss is the AUTOREGRESSIVE rollout (predictor consuming
+                    # its own output) -- which is exactly what MPC does at
+                    # deploy time. jloss is teacher-forced and therefore easy.
+                    # A widening gap means one-step prediction is fine but error
+                    # compounds under autoregression, i.e. good jloss curves that
+                    # will still roll out badly. This is the number that predicts
+                    # rollout success.
+                    "sloss_minus_jloss": sloss_meter.avg - jloss_meter.avg,
+                    "sloss_over_jloss": sloss_meter.avg / max(jloss_meter.avg, 1e-9),
                     "wd": _new_wd,
                     "lr": _new_lr,
                     "mem": torch.cuda.max_memory_allocated() / 1024.0**2,
