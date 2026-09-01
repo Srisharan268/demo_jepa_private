@@ -43,6 +43,61 @@ from this branch. Everything runs full fp32, exactly as the lab card will.
 
 ---
 
+## 0b. Instance requirements — check BEFORE renting, verify AFTER
+
+### Choosing the instance
+
+| Setting | Minimum | Why |
+|---|---|---|
+| GPU | **RTX 5090, 32 GB** | same VRAM as the lab card — the whole point |
+| **CUDA driver** | **≥ 12.8** | 5090 is Blackwell `sm_120`. Older drivers have no kernels for it |
+| **System RAM** | **≥ 32 GB** | `max_num_frames=512` builds a `torch.zeros(66048, 66048)` causal mask = **17.4 GB of HOST RAM** (`ac_predictor.py:156` slices before `.to(device)`), plus ~5 GB of dataloader workers |
+| **Disk** | **≥ 80 GB** | 7 GB transfer + ~36 GB checkpoints + headroom. **Cannot be raised later** |
+| Image | `vastai/pytorch`, tag with **CUDA ≥ 12.8 and torch ≥ 2.7** | anything older fails at the first kernel |
+
+There is no Ubuntu selector — the OS comes from the image. The glibc constraint
+in §9 of HANDOFF applies only to CoppeliaSim on the 4080, not here.
+
+Check available tags:
+
+```bash
+curl -s "https://hub.docker.com/v2/repositories/vastai/pytorch/tags?page_size=100" | python -c "import json,sys; [print(t['name']) for t in json.load(sys.stdin)['results']]"
+```
+
+### Verify on the box — first command after SSH
+
+```bash
+python -c "
+import torch, psutil, shutil
+print('torch', torch.__version__, 'cuda', torch.version.cuda)
+print('gpu  ', torch.cuda.get_device_name(0))
+free_gb = torch.cuda.get_device_properties(0).total_memory/1e9
+print(f'vram  {free_gb:.1f} GB   ram {psutil.virtual_memory().total/1e9:.1f} GB   disk {shutil.disk_usage(\".\").free/1e9:.1f} GB free')
+x = torch.randn(64, 64, device='cuda'); print((x@x).sum().item(), '<- CUDA KERNELS OK')
+assert free_gb > 30, 'wrong GPU'
+"
+```
+
+```bash
+nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
+nvidia-smi --query-compute-apps=pid,used_memory --format=csv    # MUST be empty
+```
+
+**The matmul is the test that matters.** `torch.cuda.is_available()` returns
+`True` even when no kernel exists for the architecture — it would pass on a
+too-old image and then fail at the first real op, after you have transferred
+7 GB. Run the matmul before transferring anything.
+
+If it prints `no kernel image is available for execution on the device`,
+**destroy the instance and pick a newer tag.** Do not debug the install on paid
+time.
+
+If RAM is below 32 GB and you cannot get more, `python server/optional_mask_size.py`
+drops `max_num_frames` 512 → 64. That is a change to upstream behaviour, so it
+is a fallback, not a plan — prefer paying for the RAM.
+
+---
+
 ## 1. GATE: you need more data before renting
 
 **Do not rent until this is done.** Throughput measured on the current 18-episode
