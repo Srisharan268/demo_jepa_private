@@ -523,8 +523,13 @@ untouched upstream), so global batch = `batch_size × world_size`.
 ### 4.5 Scale to the lab card
 
 Look up both spec sheets — CUDA cores, boost clock, memory bandwidth — and
-compute a ratio RTX PRO 6000 → RTX PRO 4500. Same Blackwell generation, so this
-should be reasonably honest.
+compute a ratio **RTX 5090 → RTX PRO 4500**. Both Blackwell, so this should be
+reasonably honest, but it is still the largest remaining source of error in the
+whole projection.
+
+**If an RTX PRO 4500 is ever available to rent, take it over a 5090 even at a
+premium** — it is the lab card exactly, so `ms/sample` measured on it needs no
+scaling at all and this entire section disappears.
 
 **Present it as an estimate with stated uncertainty.** Then:
 
