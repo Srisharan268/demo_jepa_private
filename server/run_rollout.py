@@ -162,7 +162,15 @@ def run_episode(ep, args):
     # bare word -- "success=False" contains "success".
     success = bool(re.search(r"success=True", log_text))
 
-    n_frames = len([f for f in os.listdir(frames_dir) if f.lower().endswith((".png", ".jpg"))])
+    # server.py writes into frames_dir/episode_XXXX/, one level deeper than
+    # --save_image_dir, so a flat listdir sees only the directory entry and
+    # reports 0 frames for a run that produced plenty.
+    n_frames = sum(
+        1
+        for _dp, _dn, files in os.walk(frames_dir)
+        for f in files
+        if f.lower().endswith((".png", ".jpg"))
+    )
 
     if proc.returncode != 0:
         # stderr matters most: Python tracebacks go there, not to stdout, so
