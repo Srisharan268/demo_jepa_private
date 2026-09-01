@@ -452,6 +452,59 @@ Record from the **last** `log_stats` line (steady state, not step 0):
 Then pick the real-run config: the largest batch that fits **32 GB** with
 headroom, and `set_batch.py` without `--measure` to restore global batch 128.
 
+### 4.1a MANDATORY before any real run — verify the NoDDP change
+
+`src/utils/single_gpu.py` skips `DistributedDataParallel` when `world_size == 1`.
+This is why stage 2 can reach a usable batch size at all.
+
+**Why it is safe:** at one rank every DDP operation is a no-op with itself —
+all-reduce averages one value, the ÷world_size divides by 1, the broadcasts copy
+to self. But DDP still allocates a contiguous gradient bucket per module at wrap
+time, ~4 bytes × trainable params. In stage 2 that is ~11 GB, and **three of the
+four wrapped modules are never trained**: `encoder` (not frozen, but absent from
+`init_opt`'s param groups), `target_encoder` (frozen at `train.py:362`, *after*
+the wrap), `dreamer_predictor` (frozen at `:375`, also after).
+
+Freezing before the wrap does not help — PyTorch refuses to wrap a module with
+no trainable parameters. `bucket_cap_mb` changes granularity, not total. There is
+no "wrap but allocate nothing" mode.
+
+The only DDP behaviour this project depends on at one GPU is the `module.` prefix
+on `state_dict` keys, which `repack_stage0.py` adds and every loader expects
+(HANDOFF §6). `NoDDP` reproduces that exactly.
+
+**Gradient accumulation is unaffected** — it averages over micro-batches via the
+`/ n_micro` loss scaling and autograd's accumulation into `.grad`. DDP averages
+over *ranks*. Orthogonal.
+
+**Prove it rather than believe it.** Stage 1 is deterministic (HANDOFF §5b
+reproduced 0.971/0.604/0.540 bit-for-bit), so:
+
+```bash
+python server/verify_noddp.py --steps 20 --batch 8 2>&1 | tee verify_noddp.log
+```
+
+Runs stage 1 twice on an identical config — once with `NoDDP`, once with
+`DJEPA_FORCE_DDP=1` restoring real DDP — and compares every per-iteration loss
+from `exp/stage1/log_r0.csv` as strings.
+
+- **PASS, all losses bit-identical** → equivalence is proven; continue.
+- **FAIL** → the reasoning is wrong somewhere. `git revert` the NoDDP commit and
+  run with real DDP at whatever batch fits. Do not proceed on a hunch.
+
+Also compare `[mem: ...]` between `verify_noddp.log` and `verify_ddp.log` — the
+NoDDP run should be several GB lower. Same losses, less memory, is the whole
+claim.
+
+**Re-run the sweep afterwards**, since the memory ceiling has moved:
+
+```bash
+python server/sweep_memory.py --stages 1 2 --batches 4 8 16 --fits 32
+```
+
+Stage 1 may now reach batch 16 (halving `accum_steps` to 8), and stage 2 should
+reach 8 or 16 — the paper's global batch of 16 on one GPU.
+
 ### 4.1b Apply the sweep result — the config for every run after this
 
 Read the `fits 32GB?` column. Take the **largest YES** per stage, then write the

@@ -28,6 +28,8 @@ import torch.multiprocessing as mp
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
+from src.utils.single_gpu import wrap_ddp
+
 from app.vjepa_2_1_dreamer_predictor.transforms import make_transforms
 from app.vjepa_2_1_dreamer_predictor.utils import init_opt, init_video_model, load_checkpoint
 from app.vjepa_2_1_dreamer_predictor.dataset import init_data
@@ -329,10 +331,10 @@ def main(args, resume_preempt=False):
     #encoder = torch.nn.DataParallel(encoder).to(device)
 
     # encoder = encoder.to(device)
-    encoder = DistributedDataParallel(encoder, static_graph=True)
+    encoder = wrap_ddp(encoder, world_size, static_graph=True)
     if target_encoder is not None:
-        target_encoder = DistributedDataParallel(target_encoder, static_graph=True)
-    dreamer_predictor = DistributedDataParallel(dreamer_predictor, static_graph=True)
+        target_encoder = wrap_ddp(target_encoder, world_size, static_graph=True)
+    dreamer_predictor = wrap_ddp(dreamer_predictor, world_size, static_graph=True)
     
     
 

@@ -25,6 +25,8 @@ import torch.multiprocessing as mp
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
+from src.utils.single_gpu import wrap_ddp
+
 from app.vjepa_2_1_dreamer_ac.dataset import init_data
 from app.vjepa_2_1_dreamer_ac.transforms import make_transforms
 from app.vjepa_2_1_dreamer_ac.utils import (
@@ -338,12 +340,12 @@ def main(args, resume_preempt=False):
         eps=eps,
         unfreeze_dreamer_predictor=unfreeze_dreamer_predictor,
     )
-    encoder = DistributedDataParallel(encoder, static_graph=True)
-    predictor = DistributedDataParallel(predictor, static_graph=False, find_unused_parameters=True)
+    encoder = wrap_ddp(encoder, world_size, static_graph=True)
+    predictor = wrap_ddp(predictor, world_size, static_graph=False, find_unused_parameters=True)
     logger.info("Encoder and predictor have been wrapped with DDP.")
-    target_encoder = DistributedDataParallel(target_encoder)
+    target_encoder = wrap_ddp(target_encoder, world_size)
     logger.info("Target encoder has been wrapped with DDP.")
-    dreamer_predictor = DistributedDataParallel(dreamer_predictor)
+    dreamer_predictor = wrap_ddp(dreamer_predictor, world_size)
     logger.info("Dreamer has been wrapped with DDP.")
 
     # -- load pretrained weights
