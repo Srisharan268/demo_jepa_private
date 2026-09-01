@@ -68,8 +68,14 @@ HELD_OUT = os.path.join(REPO, "data", "val")     # used by eval + deploy, not tr
 OUT_STAGE1 = os.path.join(REPO, "exp", "stage1")  # exp/ is gitignored
 OUT_STAGE2 = os.path.join(REPO, "exp", "stage2")
 
-# Not in the repo -- downloaded on the server (see RUNBOOK step 6).
-STAGE0_CKPT = os.path.expanduser("~/vjepa2_ac_repacked.pt")
+# Repo-relative like DATASET, so the same config works on laptop, 4080 and any
+# rented box with no edits. Gitignored (2.6GB), so it is never committed.
+# Falls back to ~ for existing setups that already put it there.
+STAGE0_CKPT = os.path.join(REPO, "vjepa2_ac_repacked.pt")
+if not os.path.exists(STAGE0_CKPT):
+    _home = os.path.expanduser("~/vjepa2_ac_repacked.pt")
+    if os.path.exists(_home):
+        STAGE0_CKPT = _home
 
 CAMERA = "right_shoulder_rgb"
 NUM_WORKERS = 8          # per rank; 4 ranks => 32 loader processes. Lower if host RAM is tight.
