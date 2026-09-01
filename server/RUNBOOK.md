@@ -280,9 +280,15 @@ nvidia-smi --query-compute-apps=pid,used_memory --format=csv
 worthless (HANDOFF §5b). If anything is running, stop and get a clean box.
 
 ```bash
-python server/split_dataset.py
+tar -xf data.tar && rm data.tar          # if you transferred it as a tarball
+find data/train -name '*.hdf5' | wc -l   # must match the laptop's count
+find data/val   -name '*.hdf5' | wc -l
 python server/prepare_configs.py --gpus 1
 ```
+
+**Do NOT run `split_dataset.py` here** if you already split on the laptop (§1).
+The transferred `data/train` and `data/val` are already separated; running it
+again would carve a SECOND held-out set out of train and move it to val.
 
 Check the reported `episode pairs -> N/rank -> M batches/rank/epoch`. If `M` is
 small, go back to §1.
