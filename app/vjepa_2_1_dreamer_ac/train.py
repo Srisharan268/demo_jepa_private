@@ -255,7 +255,10 @@ def main(args, resume_preempt=False):
         use_activation_checkpointing=use_activation_checkpointing,
         **vjepa_2_1_encoder_args_from_cfg(cfgs_model),
     )
-    target_encoder = copy.deepcopy(encoder)
+    # cloud-test: target_encoder is never updated (no EMA, no momentum write) and
+    # loads from the same checkpoint key as encoder — deepcopy wastes ~4.05 GB.
+    # Both are frozen for the duration of stage 2, so sharing is safe.
+    target_encoder = encoder
     dreamer_predictor = init_dreamer_predictor(
         uniform_power=uniform_power,
         use_mask_tokens=use_mask_tokens,
@@ -277,10 +280,9 @@ def main(args, resume_preempt=False):
     )
 
     if compile_model:
-        logger.info("Compiling encoder, target_encoder, and predictor.")
+        logger.info("Compiling encoder/target_encoder and predictor.")
         torch._dynamo.config.optimize_ddp = False
-        encoder.compile()
-        target_encoder.compile()
+        encoder.compile()   # target_encoder is the same object — no duplicate compile
         predictor.compile()
         dreamer_predictor.compile()
 
@@ -341,26 +343,29 @@ def main(args, resume_preempt=False):
         unfreeze_dreamer_predictor=unfreeze_dreamer_predictor,
     )
     encoder = wrap_ddp(encoder, world_size, static_graph=True)
+    # cloud-test: target_encoder is the same object — alias after wrap so both
+    # names refer to the same (already-wrapped) module. No second wrap needed.
+    target_encoder = encoder
     predictor = wrap_ddp(predictor, world_size, static_graph=False, find_unused_parameters=True)
-    logger.info("Encoder and predictor have been wrapped with DDP.")
-    target_encoder = wrap_ddp(target_encoder, world_size)
-    logger.info("Target encoder has been wrapped with DDP.")
+    logger.info("Encoder (shared as target_encoder) and predictor have been wrapped with DDP.")
     dreamer_predictor = wrap_ddp(dreamer_predictor, world_size)
     logger.info("Dreamer has been wrapped with DDP.")
 
     # -- load pretrained weights
     logger.info("Loading pretrained weights...")
-    encoder, predictor, target_encoder = load_pretrained_encoder_predictor(
+    encoder, predictor, _ = load_pretrained_encoder_predictor(
         r_path=p_file,
         encoder=encoder,
         predictor=predictor,
         context_encoder_key=context_encoder_key,
         target_encoder_key=target_encoder_key,
-        target_encoder=target_encoder,
+        target_encoder=None,    # cloud-test: same object as encoder, skip redundant load
         load_predictor=load_predictor,
         load_encoder=load_encoder,
     )
-    for p in target_encoder.parameters():
+    # Re-alias so target_encoder stays in sync (encoder may be reassigned by load fn)
+    target_encoder = encoder
+    for p in encoder.parameters():
         p.requires_grad = False
 
     # -- load dreamer checkpoint
@@ -382,11 +387,13 @@ def main(args, resume_preempt=False):
         if rank != 0:
             return
         save_dict = {
-            "encoder": encoder.state_dict(),
+            # cloud-test: encoder and target_encoder are the same object.
+            # Save only under "target_encoder"; make_deploy_ckpt.py synthesises
+            # "encoder" from it, so nothing downstream breaks.
+            "target_encoder": target_encoder.state_dict(),
             "predictor": predictor.state_dict(),
             "opt": optimizer.state_dict(),
             "scaler": None if scaler is None else scaler.state_dict(),
-            "target_encoder": target_encoder.state_dict(),
             "epoch": epoch,
             "loss": loss_meter.avg,
             "batch_size": batch_size,
