@@ -89,21 +89,51 @@ Have every command written down. Do not debug on paid time.
 environment costs more than the measurements are worth. Verify `torch.__version__`
 and `torch.cuda.is_available()` in the first minute.
 
-**2.2 Get the checkpoint there the cheap way.** You already have
-`~/vjepa2_ac_repacked.pt` (**2.64 GB**) on the 4080. Copy that over tailscale
-rather than re-downloading Meta's 11 GB original and re-running `repack_stage0.py`.
-The 4080 is reachable on `100.119.141.93`.
+**2.2 Transfer the checkpoint and data.** Everything is on the laptop already;
+nothing needs re-downloading. **~7 GB total** — start it early, it is the longest
+single step.
+
+| What | Size | Destination on the box |
+|---|---|---|
+| `vjepa2_ac_repacked.pt` | 2.64 GB | `Demo-JEPA/` (repo root) |
+| `data/train` | 3.9 GB | `Demo-JEPA/data/train` |
+| `data/val` | 447 MB | `Demo-JEPA/data/val` |
+
+**Repo root, not the home directory.** `prepare_configs.py` looks for the
+checkpoint at `<repo>/vjepa2_ac_repacked.pt` first (it falls back to `~`, but
+repo-relative means the same config works on every machine).
+
+vast.ai gives you `ssh -p PORT root@HOST`. **`scp` uses capital `-P`** for the
+port, unlike `ssh`. Clone the repo on the box FIRST (§3) so `Demo-JEPA/` exists:
 
 ```bash
-scp ~/vjepa2_ac_repacked.pt <rented-box>:~/
+scp -P <PORT> "C:\Users\srish\vjepa2_ac_repacked.pt" root@<HOST>:Demo-JEPA/
+scp -P <PORT> -r "C:\WSAIS Intern\Demo-JEPA\data" root@<HOST>:Demo-JEPA/
 ```
 
-If you must start from scratch: `wget https://dl.fbaipublicfiles.com/vjepa2/vjepa2-ac-vitg.pt`
-then `python server/repack_stage0.py vjepa2-ac-vitg.pt ~/vjepa2_ac_repacked.pt`.
-That checkpoint **must** carry the §5 norm rename — this branch's
-`repack_stage0.py` does it; an older copy does not.
+Tar the data first if the link is slow or flaky — one stream beats thousands of
+small files and resumes as a single unit:
 
-**2.3 Copy your collected data** (`data/train`, `data/val`) from the 4080 too.
+```bash
+tar -czf data.tgz data/train data/val
+scp -P <PORT> data.tgz root@<HOST>:Demo-JEPA/
+# on the box:  tar -xzf data.tgz && rm data.tgz
+```
+
+**Verify on the box before spending anything:**
+
+```bash
+python -c "
+import os, torch
+p = 'vjepa2_ac_repacked.pt'; print(f'{os.path.getsize(p)/1e9:.2f} GB')
+e = torch.load(p, map_location='cpu', weights_only=False, mmap=True)['encoder']
+assert 'module.norms_block.3.weight' in e and 'module.norm.weight' not in e
+print('checkpoint OK (section 5 rename present)')"
+find data/train -name '*.hdf5' | wc -l    # must match the laptop's count
+```
+
+If that assert fails the checkpoint predates commit `939124c` — regenerate it
+with `repack_stage0.py` rather than training against a degraded encoder.
 
 **2.4 wandb — set this up first, it is your only live backup.**
 
