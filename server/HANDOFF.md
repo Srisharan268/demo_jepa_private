@@ -372,6 +372,22 @@ sim works, rollout→gif proven. What remains:
 7. Data collection for real tasks via `scripts/rlbench_tools/cli.py` —
    **never timed; measure episodes/hour before planning around it.**
 
+**Deferred improvements — worth doing before the FINAL lab run, not before a
+rehearsal:**
+
+- **Repack stage 0 in fp32.** The current `vjepa2_ac_repacked.pt` was made with
+  `--bf16`. Harmless for the ENCODER (frozen, and run under bf16 autocast
+  anyway, so bf16 storage costs one rounding at load instead of one per
+  forward). But stage 2 loads `predictor` from this file as the TRAINABLE AC
+  predictor, so its initialisation is bf16-rounded. Small effect, but it is a
+  free variable to eliminate: re-run `repack_stage0.py` WITHOUT `--bf16` (needs
+  the 11GB original, produces ~5.3GB). Until then, state it as a deviation.
+- **Slim checkpoints.** 9GB -> 1.7GB per save; see §9.
+- **Fix resume.** `load_checkpoint` never restores epoch or optimizer state, so
+  a crash on day 5 of a multi-day run costs everything (§12).
+- **Stage 2 has none of the Tier 1/2 metrics** — val loss, collapse monitor,
+  cosine, retrieval are stage 1 only.
+
 **Worth building if compute stays tight: feature caching.** The encoder is
 frozen and runs under `no_grad()` in both stages, so its outputs are
 precomputable. §8 estimates ~3× on stage 1 for ~270 GB with every-3rd-frame
