@@ -406,7 +406,7 @@ def build_world_model(args: dict):
         uniform_power=uniform_power,
         device=device,
         patch_size=patch_size,
-        max_num_frames=512,
+        max_num_frames=64,
         tubelet_size=tubelet_size,
         model_name=model_name,
         crop_size=crop_size,
@@ -425,6 +425,8 @@ def build_world_model(args: dict):
         **vjepa_2_1_encoder_args_from_cfg(cfgs_model),
     )
 
+    encoder = encoder.to(dtype=torch.bfloat16)
+    predictor = predictor.to(dtype=torch.bfloat16)
     target_encoder = copy.deepcopy(encoder)
 
     dreamer_predictor = init_dreamer_predictor(
@@ -446,6 +448,7 @@ def build_world_model(args: dict):
         use_activation_checkpointing=use_activation_checkpointing,
     )
 
+    dreamer_predictor = dreamer_predictor.to(dtype=torch.bfloat16)
     if compile_model:
         logger.info("Compiling encoder, predictor, target_encoder, and dreamer_predictor.")
         torch._dynamo.config.optimize_ddp = False

@@ -211,6 +211,8 @@ def main(args, resume_preempt=False):
         model_cfg=cfgs_model,
         fusion_type=fusion_type,
     )
+    encoder = encoder.to(dtype=torch.bfloat16)
+    dreamer_predictor = dreamer_predictor.to(dtype=torch.bfloat16)
     if unfreeze_vit:
         target_encoder = deepcopy(encoder)
     else:
@@ -472,18 +474,13 @@ def main(args, resume_preempt=False):
                         # mean loss over the full effective batch.
                         loss = loss_fn(dreamer_output, target_feature) / n_micro
 
-                    if mixed_precision:
-                        scaler.scale(loss).backward()
-                    else:
-                        loss.backward()
+                    loss.backward()
                     micro_losses.append(loss.detach().item() * n_micro)
 
                 # Report the unscaled mean loss, matching upstream's logged scale.
                 loss = sum(micro_losses) / n_micro
 
-                # Unscale once, on the fully-accumulated gradient
-                if mixed_precision:
-                    scaler.unscale_(optimizer)
+                # GradScaler bypassed (bf16): nothing to unscale.
 
                 # Gradient clipping for training stability
                 # clip_grad_norm_ returns the original (unclipped) gradient norm
@@ -495,11 +492,7 @@ def main(args, resume_preempt=False):
                 # The effective clipped norm
                 grad_norm_clipped = min(float(grad_norm_unclipped), max_grad_norm)
                 
-                if mixed_precision:
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    optimizer.step()
+                optimizer.step()
                 optimizer.zero_grad()
 
 

@@ -29,8 +29,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # ----------------------------------------------------------------------------
 # EDIT THESE
 # ----------------------------------------------------------------------------
-PY_SIM = "/opt/conda/envs/rlbench/bin/python"   # python with pyrep+rlbench
-COPPELIASIM_ROOT = "/opt/CoppeliaSim"
+PY_SIM = "/home/cobot/simenv/opt/conda/envs/rlbench/bin/python"
+COPPELIASIM_ROOT = "/home/cobot/simenv/content/CoppeliaSim"
 DISPLAY = ":99"
 # ----------------------------------------------------------------------------
 
@@ -100,10 +100,26 @@ def wait_for_server(server_log, proc, timeout=180):
     return False
 
 
-def kill_stale():
+def port_free(port=PORT, host="127.0.0.1"):
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((host, port)); return True
+        except OSError:
+            return False
+
+
+def kill_stale(timeout=60):
     subprocess.run("pkill -f coppeliaSim; pkill -f rlbench_tools/server.py",
                    shell=True, stderr=subprocess.DEVNULL)
-    time.sleep(2)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if port_free():
+            return True
+        time.sleep(2)
+    print(f"  WARNING: port {PORT} still bound after {timeout}s", flush=True)
+    return False
 
 
 def run_episode(ep, args):
@@ -162,7 +178,8 @@ def run_episode(ep, args):
     # bare word -- "success=False" contains "success".
     success = bool(re.search(r"success=True", log_text))
 
-    n_frames = len([f for f in os.listdir(frames_dir) if f.lower().endswith((".png", ".jpg"))])
+    n_frames = sum(1 for _dp,_dn,files in os.walk(frames_dir)
+                   for f in files if f.lower().endswith((".png",".jpg")))
 
     if proc.returncode != 0:
         # stderr matters most: Python tracebacks go there, not to stdout, so

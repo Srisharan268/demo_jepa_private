@@ -1,24 +1,21 @@
-folder: your_folder
-
+folder: /home/cobot/Demo-JEPA/exp/deploy
 meta:
   dtype: bfloat16
   resume_checkpoint: null
   load_predictor: true
   load_encoder: true
-  pretrain_checkpoint: your_checkpoint
-  dreamer_predictor_checkpoint: your_checkpoint
+  pretrain_checkpoint: /home/cobot/Demo-JEPA/stage2_deploy.pt
+  dreamer_predictor_checkpoint: /home/cobot/Demo-JEPA/stage1_slim.pt
   context_encoder_key: target_encoder
   target_encoder_key: target_encoder
   seed: 239
   use_sdpa: true
-
 model:
   model_name: vit_giant_xformers
   pred_depth: 24
   pred_embed_dim: 1024
   pred_is_frame_causal: true
   pred_num_heads: 16
-
   uniform_power: true
   use_extrinsics: false
   has_cls_first: false
@@ -30,7 +27,6 @@ model:
   modality_embedding: true
   n_registers: 0
   normalize_predictor: false
-
   use_activation_checkpointing: true
   use_mask_tokens: true
   use_rope: true
@@ -39,21 +35,17 @@ model:
   zero_init_mask_tokens: true
   wide_silu: true
   compile_model: false
-
 data:
   crop_size: 256
   patch_size: 16
   tubelet_size: 2
-
   datasets:
-    - dummy
+  - dummy
   dataset_fpcs:
-    - 1
-
+  - 1
 loss:
   normalize_reps: true
   auto_steps: 1
-
 optimization:
   ipe: null
   weight_decay: 0.0
@@ -65,31 +57,25 @@ optimization:
   lr: 0.0
   final_lr: 0.0
   enc_lr_scale: 1.0
-  betas: [0.9, 0.999]
-  eps: 1.0e-8
-
+  betas:
+  - 0.9
+  - 0.999
+  eps: 1.0e-08
 wandb:
   project: deploy
   name: deploy
-
 deploy:
-  server_ip: "127.0.0.1"
+  server_ip: 127.0.0.1
   server_port: 9001
-
-  reference_h5: your_reference_h5
-
-  image_key: "observations/images/right_shoulder_rgb"
-
+  reference_h5: /home/cobot/Demo-JEPA/data/val/push_button/sawyer/variation0_0000.hdf5
+  image_key: observations/images/right_shoulder_rgb
   ref_data_fps: 30
   ref_target_fps: 5
-
   l1_threshold: 1.0
   queue_horizon: 4
-  max_steps: -1
-
+  max_steps: 40
   abs_gripper: true
   discrete_gripper: false
-
   mpc:
     rollout: 1
     samples: 200
@@ -97,5 +83,5 @@ deploy:
     cem_steps: 50
     momentum_mean: 0.15
     momentum_std: 0.75
-    maxnorm: 0.1
+    maxnorm: 0.005
     verbose: true
