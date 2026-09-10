@@ -19,14 +19,25 @@ rng_state. Only the demo is regenerated -- no images are written -- so this is
 far cheaper than re-collecting.
 
 *** THE RESULT IS VERIFIED, NOT TRUSTED. ***
-`observations/qpos` in the stored file is built directly from the returned
-actions (io_utils.build_qpos_qvel_action), so a regenerated episode must
-reproduce it exactly. Anything that perturbs RNG consumption -- a different
-number of retries inside generate_source_episode's attempt loop, different
-arm velocity/acceleration limits, a different RLBench build -- shows up as a
-qpos mismatch. Episodes that fail verification are REPORTED AND SKIPPED; no
-rng_state.pkl is written for them, because a wrong scene is worse than a
-random one (it looks correct and is not).
+Exact reproduction is NOT the test, and an earlier version of this file was
+wrong to use it. The dataset was collected with 12 collector processes running
+in parallel; CoppeliaSim's solver is not reproducible across different CPU
+load, so replaying a correct scene solo still drifts by millimetres and grows
+from step 1 onward. Measured: max |diff| ~9 mm over 93 steps, and two
+consecutive replays of the SAME seed disagreed with each other.
+
+What matters is the SCENE, not the trajectory -- we are not replaying the demo,
+we are running a policy in the scene it was recorded in. So verification asks a
+question with no arbitrary tolerance in it: regenerate the demo, then rank every
+stored episode by how close its end-effector endpoint is to the regenerated one.
+A correct rng_state puts the target object in the same place, so the episode
+identifies ITSELF by a wide margin. A wrong rng_state randomises the target, and
+the nearest neighbour is some other episode -- or itself by a margin no better
+than chance. `--min-margin` sets how decisive that has to be.
+
+Episodes that fail are REPORTED AND SKIPPED; no rng_state.pkl is written for
+them, because a wrong scene is worse than a random one (it looks correct and is
+not).
 
 Runs in the rlbench env (pyrep + RLBench), needs a display. The interpreter and
 CoppeliaSim paths differ per machine -- take them from PY_SIM and
@@ -79,39 +90,63 @@ def episode_attrs(path):
     return a, qpos
 
 
-def compare(stored_qpos, actions):
-    """Exact match required. Returns (ok, detail)."""
-    T = len(stored_qpos)
-    if len(actions) < T:
-        return False, f"regenerated {len(actions)} steps, stored has {T}"
+def fingerprint(qpos):
+    """Where the end-effector finishes -- for a reach/press task, the target.
 
-    regen, _, _ = build_qpos_qvel_action(np.asarray(actions, dtype=np.float32), T)
-    regen = np.asarray(regen, dtype=np.float32)
-    stored = np.asarray(stored_qpos, dtype=np.float32)
+    The scene, not the trajectory, is what we are trying to reproduce, and the
+    demo ends at the object it was reaching for. Two runs in the SAME scene end
+    in the same place regardless of the path taken to get there; two runs in
+    DIFFERENT scenes end at different objects.
+    """
+    return np.asarray(qpos[-1][:3], dtype=np.float64)
 
-    if regen.shape != stored.shape:
-        return False, f"shape {regen.shape} vs stored {stored.shape}"
-    if np.array_equal(regen, stored):
-        return True, "exact"
 
-    # A bare max-abs number cannot distinguish "the scene diverged" from "the
-    # scene is identical but one channel uses a different convention", and those
-    # need opposite responses. qpos columns are xyz(3) + quat(4) + gripper(1);
-    # cols 0:7 are what actually determine the scene, and the gripper is binary
-    # so a mismatch there reads as exactly 1.0.
-    d = np.abs(regen - stored)
-    cols = ("x", "y", "z", "qx", "qy", "qz", "qw", "grip")
-    per_col = "  ".join(f"{c}={d[:, i].max():.3g}" for i, c in enumerate(cols))
-    rows_bad = (d > 0).any(axis=1)
-    pose_ok = np.array_equal(regen[:, :7], stored[:, :7])
-    detail = (
-        f"max abs diff {d.max():.6g}; {int((d > 0).sum())}/{d.size} elements differ; "
-        f"{int(rows_bad.sum())}/{len(d)} steps affected; "
-        f"first at step {int(np.argmax(rows_bad))}; "
-        f"pose cols 0:7 {'MATCH' if pose_ok else 'DIFFER'}\n"
-        f"      per-column max: {per_col}"
+def identify(actions, catalogue):
+    """Which stored episode's scene does this regenerated demo actually match?
+
+    Bit-exact comparison cannot be used: the source data was collected with 12
+    collector processes in parallel, and CoppeliaSim's solver is not
+    reproducible across different CPU load, so a correct replay still drifts by
+    millimetres. But an arbitrary tolerance would be no better than a guess.
+
+    So this asks a question that needs no threshold: rank every stored episode
+    by how close its endpoint is to the regenerated one. A correct rng_state
+    puts the target in the same place, so the episode should identify ITSELF,
+    by a margin far larger than the drift. A wrong rng_state randomises the
+    target, and the nearest neighbour is then some other episode, or itself by
+    a margin no better than chance.
+
+    Returns (ranked, ) where ranked is [(name, distance_m), ...] nearest first.
+    """
+    regen, _, _ = build_qpos_qvel_action(np.asarray(actions, dtype=np.float32),
+                                         len(actions))
+    f = fingerprint(regen)
+    ranked = sorted(
+        ((name, float(np.linalg.norm(f - fingerprint(q)))) for name, q in catalogue),
+        key=lambda kv: kv[1],
     )
-    return False, detail
+    return ranked
+
+
+def verdict(name, ranked, min_margin):
+    """(ok, detail). Self-identification by a clear margin is the pass condition."""
+    if not ranked:
+        return False, "no catalogue to compare against"
+    best, best_d = ranked[0]
+    runner = ranked[1] if len(ranked) > 1 else None
+
+    if best != name:
+        return False, (f"identifies as {best} ({best_d * 1000:.1f} mm), not itself "
+                       f"-- wrong scene")
+    if runner is None:
+        return True, f"self at {best_d * 1000:.1f} mm (only episode, no margin available)"
+
+    margin = runner[1] / best_d if best_d > 0 else float("inf")
+    detail = (f"self at {best_d * 1000:.1f} mm; next-nearest {runner[0]} at "
+              f"{runner[1] * 1000:.1f} mm; margin {margin:.1f}x")
+    if margin < min_margin:
+        return False, detail + f" -- below --min-margin {min_margin}"
+    return True, detail
 
 
 def main():
@@ -128,6 +163,9 @@ def main():
     p.add_argument("--image-width", type=int, default=640)
     p.add_argument("--image-height", type=int, default=480)
     p.add_argument("--limit", type=int, default=0, help="stop after N episodes (0 = all)")
+    p.add_argument("--min-margin", type=float, default=3.0,
+                   help="nearest match must be this many times closer than the "
+                        "runner-up to count as identified")
     args = p.parse_args()
 
     if not os.path.isdir(args.data_root):
@@ -146,22 +184,34 @@ def main():
             sys.exit(f"ERROR: missing {d}")
         episodes += [os.path.join(d, f) for f in sorted(os.listdir(d))
                      if f.endswith((".hdf5", ".h5"))]
-    if args.limit:
-        episodes = episodes[: args.limit]
     if not episodes:
         sys.exit("ERROR: no episodes found")
 
-    print(f"recovering {len(episodes)} episode(s) -> {args.out}\n")
+    # Built from EVERY episode, before --limit is applied: the catalogue is what
+    # a regenerated demo is identified against, so trimming it would remove the
+    # very alternatives the margin is measured against.
+    catalogue = []
+    for path in episodes:
+        try:
+            with h5py.File(path, "r") as f:
+                catalogue.append((os.path.splitext(os.path.basename(path))[0],
+                                  np.asarray(f["observations/qpos"])))
+        except Exception as e:
+            print(f"WARNING: cannot read {path} for the catalogue: {e}")
+
+    targets = episodes[: args.limit] if args.limit else episodes
+    print(f"recovering {len(targets)} episode(s) against a catalogue of "
+          f"{len(catalogue)} -> {args.out}\n")
 
     ok_n = fail_n = 0
     failures = []
 
-    for i, path in enumerate(episodes):
+    for i, path in enumerate(targets):
         name = os.path.splitext(os.path.basename(path))[0]
         try:
             a, stored_qpos = episode_attrs(path)
         except KeyError as e:
-            print(f"[{i + 1}/{len(episodes)}] {name}: SKIP -- {e}", flush=True)
+            print(f"[{i + 1}/{len(targets)}] {name}: SKIP -- {e}", flush=True)
             fail_n += 1
             failures.append((name, str(e)))
             continue
@@ -172,7 +222,7 @@ def main():
         source_robot = str(a.get("source_robot", "panda"))
 
         if str(a.get("robot", source_robot)) != source_robot:
-            print(f"[{i + 1}/{len(episodes)}] {name}: SKIP -- robot={a.get('robot')!r} is "
+            print(f"[{i + 1}/{len(targets)}] {name}: SKIP -- robot={a.get('robot')!r} is "
                   f"not the source ({source_robot!r}); point --robot-subdir at the "
                   f"source side", flush=True)
             fail_n += 1
@@ -192,7 +242,7 @@ def main():
             arm_max_acceleration=args.arm_max_acceleration,
         )
 
-        print(f"[{i + 1}/{len(episodes)}] {name}  seed={seed} var={variation} ... ",
+        print(f"[{i + 1}/{len(targets)}] {name}  seed={seed} var={variation} ... ",
               end="", flush=True)
         try:
             actions, rng_state, actual_var = generate_source_episode(cfg, variation, seed)
@@ -202,7 +252,8 @@ def main():
             failures.append((name, f"regeneration error: {e}"))
             continue
 
-        good, detail = compare(stored_qpos, actions)
+        ranked = identify(actions, catalogue)
+        good, detail = verdict(name, ranked, args.min_margin)
         if not good:
             print(f"MISMATCH ({detail}) -- not writing", flush=True)
             fail_n += 1
@@ -229,8 +280,8 @@ def main():
         ok_n += 1
 
     print(f"\n{'=' * 62}")
-    print(f"verified and written : {ok_n}/{len(episodes)}")
-    print(f"failed / skipped     : {fail_n}/{len(episodes)}")
+    print(f"verified and written : {ok_n}/{len(targets)}")
+    print(f"failed / skipped     : {fail_n}/{len(targets)}")
     if failures:
         print("\nfailures:")
         for name, why in failures:
