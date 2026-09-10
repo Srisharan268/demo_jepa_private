@@ -94,12 +94,24 @@ def compare(stored_qpos, actions):
     if np.array_equal(regen, stored):
         return True, "exact"
 
-    diff = float(np.max(np.abs(regen - stored)))
-    # Not a tolerance check -- a genuinely identical trajectory is bit-identical
-    # here, both sides being float32 built by the same function. A small but
-    # nonzero diff means the scene drifted, which is exactly the failure this
-    # script exists to catch.
-    return False, f"max abs diff {diff:.6g}"
+    # A bare max-abs number cannot distinguish "the scene diverged" from "the
+    # scene is identical but one channel uses a different convention", and those
+    # need opposite responses. qpos columns are xyz(3) + quat(4) + gripper(1);
+    # cols 0:7 are what actually determine the scene, and the gripper is binary
+    # so a mismatch there reads as exactly 1.0.
+    d = np.abs(regen - stored)
+    cols = ("x", "y", "z", "qx", "qy", "qz", "qw", "grip")
+    per_col = "  ".join(f"{c}={d[:, i].max():.3g}" for i, c in enumerate(cols))
+    rows_bad = (d > 0).any(axis=1)
+    pose_ok = np.array_equal(regen[:, :7], stored[:, :7])
+    detail = (
+        f"max abs diff {d.max():.6g}; {int((d > 0).sum())}/{d.size} elements differ; "
+        f"{int(rows_bad.sum())}/{len(d)} steps affected; "
+        f"first at step {int(np.argmax(rows_bad))}; "
+        f"pose cols 0:7 {'MATCH' if pose_ok else 'DIFFER'}\n"
+        f"      per-column max: {per_col}"
+    )
+    return False, detail
 
 
 def main():
