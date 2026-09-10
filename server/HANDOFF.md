@@ -443,3 +443,67 @@ printed only `stdout` on failure while tracebacks go to `stderr`.
 **Working style they want:** verify against the actual source before asserting;
 plain commands over automation; honest probabilities over reassurance; say
 plainly when something cannot be de-risked.
+
+## 13. Temporal alignment (2026-09-10) — synced to the CURRENT checkpoint, NOT to the paper
+
+**Diagnosis.** Rollouts saturate: every action component pins to `±maxnorm` on
+every step, at every `maxnorm` tried (0.1, 0.01, 0.005 — only the time-to-wedge
+changed). Root cause is a train/deploy temporal mismatch, not policy quality.
+
+- AC predictor action stride = `2 * ceil(data_fps/fps)` raw frames
+  (`dataset.py`: `primary_states[::frameskip]`, `frameskip = tubelet_size = 2`).
+  The stage 2 checkpoint ran `data_fps: 5, fps: 5` → **one action = 2 raw frames**.
+- Deploy goal stride = `ref_data_fps // ref_target_fps`. Upstream 30/5 = **6**.
+- 3x gap → goal unreachable in one step → cost monotone over the whole action
+  box → saturation is guaranteed *even with a perfectly trained model*.
+
+**What was changed** (`configs/inference/deploy_vjepa_2_1.yaml`, committed —
+`prepare_deploy_config.py` reads the config from `git show HEAD:` and only
+overrides `reference_h5` / `image_key` / `max_steps`, so values must be
+committed to take effect):
+
+| key | was | now | why |
+|---|---|---|---|
+| `ref_data_fps` | 30 | 20 | true source rate: server `dt=0.05`; 93-frame demo = 4.6 s |
+| `ref_target_fps` | 5 | 10 | gives `frame_skip = 2` = the checkpoint's action stride |
+| `l1_threshold` | 1.0 | 0.28 | 1.0 is under chance (~1.13) so it never gated; 0.28 is deploy.py's own default. STILL UNCALIBRATED |
+| `mpc.maxnorm` | 0.1 | 0.02 | stride-2 training action scale is mean ~10 mm / max ~22 mm |
+
+**This is deliberately NOT paper-faithful.** It makes deploy consistent with the
+checkpoint that already exists, so that checkpoint can be evaluated without
+retraining.
+
+### TODO — make it identical to the paper (requires retraining stage 2)
+
+Paper Table 9 (Shared Training Configuration) specifies **FPS: 5**, tubelet 2,
+8 context frames, for *both* training stages. Source data here is 20 Hz, so:
+
+- Stage 2 should run `data_fps: 20, fps: 5` → `fstp = 4` → **one action = 8 raw
+  frames**, not 2. Current training is 4x finer than the paper.
+- Deploy must then be re-synced to `frame_skip = 8`, e.g. `ref_data_fps: 20,
+  ref_target_fps: 2.5` is not integer — use `ref_data_fps: 8, ref_target_fps: 1`
+  or equivalent. Re-derive `maxnorm` from the new (larger) action scale.
+- Paper §3.1 states no numeric value for the deploy offset Δ, only that it must
+  be "aligned with the planning frequency". §3.3's stage 1 offset `n` and jitter
+  `r` are likewise unspecified (code uses `variance_step: 6`). So alignment is
+  a stated *requirement*; the numbers are ours to derive.
+
+### Still open, NOT fixed by the above
+
+- **Random rollout scene.** `server.py` supports `--episode_dir` but needs
+  `rng_state.pkl` + `meta.json` in the pair root; **neither exists anywhere in
+  `data/`**, so exact scene restore is impossible without re-collection.
+  Partial mitigation available: filenames encode the variation
+  (`variation10_...`), and `server.py` takes `--variation`, so at minimum the
+  rollout can be made to match the demo's variation instead of being fully
+  random. Training is UNAFFECTED — it pairs by identical filename across
+  `franka/`/`sawyer/`, i.e. matched scenes.
+- **IK deadlock.** `server_episode_finished` warns on `failed` and continues.
+  Once the arm wedges, the observation stops changing, so the policy emits the
+  same action forever and burns the rest of the episode.
+- **Is stage 2's action conditioning real?** Loss fell 0.315 → 0.102 (still
+  descending at epoch 36, no plateau) but the identity baseline was never
+  measured, so collapse-to-copy is not excluded. `WorldModel.dummy_test()`
+  in `cem_utils.py` settles it: run CEM against the TRUE next franka frame.
+  **The "next" frame must be `i+2`, matching the training stride** — `i+1` or
+  `i+6` silently reproduces the bug being tested for.

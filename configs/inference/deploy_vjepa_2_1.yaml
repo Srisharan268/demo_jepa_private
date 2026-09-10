@@ -80,10 +80,28 @@ deploy:
 
   image_key: "observations/images/right_shoulder_rgb"
 
-  ref_data_fps: 30
-  ref_target_fps: 5
+  # frame_skip = ref_data_fps // ref_target_fps must equal the AC predictor's
+  # action stride, which is 2 * ceil(data_fps / fps) raw frames -- see
+  # app/vjepa_2_1_dreamer_ac/dataset.py (primary_states[::frameskip], frameskip
+  # = tubelet_size). The stage 2 checkpoint we have was trained with
+  # data_fps=fps=5 -> ceil=1, tubelet 2 -> ONE ACTION = 2 RAW FRAMES.
+  # Source data is 20 Hz (server dt=0.05; a 93-frame push_button demo = 4.6 s),
+  # so 20 -> 10 gives frame_skip 2 and the numbers describe reality.
+  #
+  # Upstream shipped 30/5 = 6. Against a 2-frame action that makes the goal 3x
+  # further than any single step can reach, so the CEM cost is monotone over the
+  # whole action box and every component pins to +/-maxnorm on every step. The
+  # paper (arXiv 2605.20811 SS3.1) states no value for this offset but does
+  # require it be "aligned with the planning frequency" -- 30/5 is not.
+  ref_data_fps: 20
+  ref_target_fps: 10
 
-  l1_threshold: 1.0
+  # UNCALIBRATED. 0.28 is the code default in deploy.py; the shipped 1.0 sits
+  # just under chance (~1.13 in layer-normed space), so the test always passes,
+  # the reference advances EVERY step, the demo is exhausted in ~1/6 of the
+  # episode and the goal freezes on its final frame. Calibrate properly with
+  # cem_utils.calibrate_threshold_from_sequence() and replace this.
+  l1_threshold: 0.28
   queue_horizon: 4
   max_steps: -1
 
@@ -97,5 +115,12 @@ deploy:
     cem_steps: 50
     momentum_mean: 0.15
     momentum_std: 0.75
-    maxnorm: 0.1
+    # Bound on each action component, and ALSO the CEM sampling std. Sized to
+    # the stride-2 training action scale: raw per-frame |dxyz| is mean 5 mm /
+    # max 11 mm, so one 2-frame action is mean ~10 mm / max ~22 mm. 0.02 lets
+    # the planner express the range it was trained on without going far past it.
+    # Upstream 0.1 is ~5x the training max. Once ref_data_fps is correct this
+    # should rarely bind -- if actions still sit at +/-maxnorm every step, the
+    # goal is still unreachable and the world model is the next suspect.
+    maxnorm: 0.02
     verbose: true
