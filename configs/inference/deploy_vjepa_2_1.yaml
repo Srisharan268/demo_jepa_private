@@ -69,9 +69,9 @@ deploy:
   server_port: 9001
   reference_h5: /home/cobot/Demo-JEPA/data/val/push_button/sawyer/variation0_0000.hdf5
   image_key: observations/images/right_shoulder_rgb
-  ref_data_fps: 30
-  ref_target_fps: 5
-  l1_threshold: 1.0
+  ref_data_fps: 20
+  ref_target_fps: 10
+  l1_threshold: 0.28
   queue_horizon: 4
   max_steps: 40
   abs_gripper: true
@@ -83,5 +83,5 @@ deploy:
     cem_steps: 50
     momentum_mean: 0.15
     momentum_std: 0.75
-    maxnorm: 0.005
+    maxnorm: 0.02
     verbose: true
