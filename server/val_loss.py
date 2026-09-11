@@ -66,6 +66,12 @@ def main():
     p.add_argument("--batches", type=int, default=8)
     p.add_argument("--batch-size", type=int, default=2)
     p.add_argument("--camera", default="right_shoulder_rgb")
+    # The shapes only balance when this is 1: images I=fpc, states after
+    # [::frameskip] give S=ceil(I/frameskip), actions=S-1, latent frames=I, and
+    # the predictor needs I-1 actions. init_data passes frameskip=tubelet_size
+    # (=2), which cannot work. Exposed so the real value can be found by test.
+    p.add_argument("--frameskip", type=int, default=None,
+                   help="dataset frameskip; default = tubelet_size, as init_data passes")
     args = p.parse_args()
 
     params = yaml.safe_load(open(os.path.join(REPO, args.fname)))
@@ -95,7 +101,8 @@ def main():
     )
 
     ds = UnifiedPairedH5Dataset(
-        dataset=args.data, camera_views=[args.camera], frameskip=tubelet,
+        dataset=args.data, camera_views=[args.camera],
+        frameskip=(args.frameskip if args.frameskip else tubelet),
         frames_per_clip=fpc, fps=fps, data_fps=data_fps, transform=transform,
         camera_frame=False, primary_subdir="franka", reference_subdir="sawyer",
     )
