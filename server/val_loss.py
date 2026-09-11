@@ -152,6 +152,7 @@ def main():
         return torch.mean(torch.abs(z - _h) ** loss_exp) / loss_exp
 
     got = {"gt": [], "zero": [], "shuf": []}
+    sens = []
     shapes_printed = False
 
     for bi, sample in enumerate(loader):
@@ -176,6 +177,20 @@ def main():
                 shapes_printed = True
 
             _z, _s = h[:, :-tokens_per_frame], states[:, :-1]
+
+            # Per-position output sensitivity. The paper plans from ONE frame
+            # (Alg. 1: z_{t+H} = F_wm(z_t, s_t, a)), and block-causal masking
+            # makes position 0 of every training sequence exactly that case.
+            # Averaging loss over all 7 positions dilutes a position-0 effect
+            # ~7x, so measure the model's OUTPUT change directly -- no target
+            # needed: if swapping the action does not move the output, the
+            # action is unused, whatever the target is.
+            o_gt = step_predictor(_z, actions, _s)
+            o_sh = step_predictor(_z, actions[:, torch.randperm(actions.size(1), device=device)], _s)
+            T_ = o_gt.size(1) // tokens_per_frame
+            d = (o_gt - o_sh).view(bsz, T_, tokens_per_frame, -1).abs().mean(dim=(0, 2, 3))
+            ref = o_gt.view(bsz, T_, tokens_per_frame, -1).abs().mean(dim=(0, 2, 3))
+            sens.append((d / (ref + 1e-9)).float().cpu().numpy())
             variants = {
                 "gt": actions,
                 "zero": torch.zeros_like(actions),
@@ -190,6 +205,13 @@ def main():
 
     if not got["gt"]:
         sys.exit("ERROR: no batches ran")
+
+    sv = np.mean(np.stack(sens), axis=0)
+    print("\n" + "=" * 62)
+    print("action sensitivity by context length (|out(GT)-out(shuffled)| / |out|)")
+    for t, v in enumerate(sv):
+        tag = "  <- DEPLOY regime (1 frame of context)" if t == 0 else ""
+        print(f"  position {t}  ({t + 1} frame ctx)  {v * 100:7.4f}%{tag}")
 
     gt, zero, shuf = (float(np.mean(got[k])) for k in ("gt", "zero", "shuf"))
     print(f"\n{'=' * 62}")
