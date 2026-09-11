@@ -152,6 +152,9 @@ def main():
     p.add_argument("--episode", default=None, help="default: first held-out franka episode")
     p.add_argument("--steps", type=int, default=5, help="timesteps per stride")
     p.add_argument("--start", type=int, default=3, help="first action index")
+    p.add_argument("--train-transform", action="store_true",
+                   help="use training geometry (scale 1.777); deploy builds 1.0, "
+                        "which the encoder never saw in training")
     p.add_argument("--sweep", type=int, nargs="+", default=None,
                    help="strides to try (default: just 2, the derived training stride)")
     args = p.parse_args()
@@ -174,6 +177,18 @@ def main():
     print("goal = the TRUE next franka frame; the dreamer is NOT in this loop.\n")
 
     world_model, dtype, mixed = build_world_model(params)
+    if args.train_transform:
+        import yaml as _y
+        from app.vjepa_2_1_dreamer_ac.transforms import make_transforms
+        _a = _y.safe_load(open(os.path.join(
+            REPO, "configs/train/vjepa_2_1_dreamer_ac.yaml"))).get("data_aug", {})
+        _sc = tuple(_a.get("random_resize_scale", [1.0, 1.0]))
+        _ar = tuple(_a.get("random_resize_aspect_ratio", [1.0, 1.0]))
+        world_model.transform = make_transforms(
+            random_horizontal_flip=False, random_resize_aspect_ratio=_ar,
+            random_resize_scale=_sc, reprob=0.0, auto_augment=False,
+            motion_shift=False, crop_size=int(params["data"]["crop_size"]))
+        print(f"transform: TRAINING geometry scale={_sc} aspect={_ar}\n")
     wm = make_wm(world_model)
     mpc = dict(world_model.mpc_args)
     mpc["abs_gripper"] = world_model.abs_gripper
