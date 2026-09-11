@@ -70,6 +70,8 @@ def main():
     # [::frameskip] give S=ceil(I/frameskip), actions=S-1, latent frames=I, and
     # the predictor needs I-1 actions. init_data passes frameskip=tubelet_size
     # (=2), which cannot work. Exposed so the real value can be found by test.
+    p.add_argument("--train-transform", action="store_true",
+                   help="use training's image geometry (scale 1.777) instead of deploy's 1.0")
     p.add_argument("--frameskip", type=int, default=None,
                    help="dataset frameskip; default = tubelet_size, as init_data passes")
     args = p.parse_args()
@@ -91,13 +93,23 @@ def main():
     print(f"loss: normalize_reps={normalize_reps} exp={loss_exp}")
     print(f"data: {args.data}\n")
 
-    # No augmentation: this is an evaluation. Training ran WITH augmentation, so
-    # if anything that biases this number LOW relative to the 0.102 it is being
-    # compared against -- a gap that survives is real.
+    # Training scaled every image by 1.777 (both ends of random_resize_scale are
+    # equal, so it is deterministic, not an augmentation). deploy.py's
+    # build_world_model uses scale (1.0, 1.0) -- a real train/deploy shift that
+    # the encoder never saw. --train-transform reproduces training's geometry so
+    # the loss is comparable to the reported 0.102.
+    aug = tcfg.get("data_aug", {})
+    if args.train_transform:
+        ar = tuple(aug.get("random_resize_aspect_ratio", [1.0, 1.0]))
+        sc = tuple(aug.get("random_resize_scale", [1.0, 1.0]))
+        print(f"transform: TRAINING geometry  scale={sc} aspect={ar}")
+    else:
+        ar, sc = (1.0, 1.0), (1.0, 1.0)
+        print(f"transform: DEPLOY geometry    scale={sc} aspect={ar}")
     transform = make_transforms(
-        random_horizontal_flip=False, random_resize_aspect_ratio=(1.0, 1.0),
-        random_resize_scale=(1.0, 1.0), reprob=0.0, auto_augment=False,
-        motion_shift=False, crop_size=crop,
+        random_horizontal_flip=bool(aug.get("horizontal_flip", False)) if args.train_transform else False,
+        random_resize_aspect_ratio=ar, random_resize_scale=sc,
+        reprob=0.0, auto_augment=False, motion_shift=False, crop_size=crop,
     )
 
     ds = UnifiedPairedH5Dataset(
