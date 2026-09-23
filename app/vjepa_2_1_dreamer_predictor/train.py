@@ -339,7 +339,7 @@ def main(args, resume_preempt=False):
     
 
     start_epoch = 0
-    # -- load training checkpoint
+    # -- load PRETRAINED weights (stage 0 encoder, optional dreamer init)
     if load_path or dreamer_predictor_path:
         (
             encoder,
@@ -347,7 +347,7 @@ def main(args, resume_preempt=False):
             dreamer_predictor,
             optimizer,
             scaler,
-            start_epoch,
+            _,
         ) = load_checkpoint(
             r_path=load_path,
             dreamer_predictor_path=dreamer_predictor_path,
@@ -358,9 +358,26 @@ def main(args, resume_preempt=False):
             scaler=scaler,
             encoder_key=pretrain_encoder_key,
         )
-        for _ in range(start_epoch * ipe):
-            scheduler.step()
-            wd_scheduler.step()
+
+    # -- RESUME this run from its own latest checkpoint.
+    # load_checkpoint only reads pretrained weights and hardcodes epoch 0, so a
+    # relaunch after a crash used to restart the epoch count, the optimizer
+    # moments and the LR warmup -- silently, with an LR spike on a trained
+    # model. A FRESH run needs a new output folder. Strict load: a key mismatch
+    # must fail loudly, never bind nothing.
+    if os.path.exists(latest_path):
+        _ck = torch.load(latest_path, map_location="cpu", weights_only=False)
+        dreamer_predictor.load_state_dict(_ck["dreamer_predictor"])
+        optimizer.load_state_dict(_ck["opt"])
+        if scaler is not None and _ck.get("scaler") is not None:
+            scaler.load_state_dict(_ck["scaler"])
+        start_epoch = int(_ck["epoch"])
+        logger.info(f"RESUMING from {latest_path}: epoch {start_epoch}, "
+                    f"last loss {_ck.get('loss')}")
+        del _ck
+    for _ in range(start_epoch * ipe):
+        scheduler.step()
+        wd_scheduler.step()
     
     if target_encoder is not None:
         for param in target_encoder.parameters():

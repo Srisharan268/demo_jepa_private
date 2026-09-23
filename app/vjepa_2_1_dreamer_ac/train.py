@@ -382,6 +382,26 @@ def main(args, resume_preempt=False):
             p.requires_grad = False
 
     start_epoch = 0
+    # -- RESUME. resume_path (explicit resume_checkpoint, else latest.pt) was
+    # computed above but never used, so every relaunch restarted from epoch 0.
+    if resume_path is not None:
+        if unfreeze_dreamer_predictor:
+            raise RuntimeError(
+                "resume with unfreeze_dreamer_predictor=True is unsupported: "
+                "save_checkpoint does not store the dreamer, so its trained "
+                "weights would be silently lost. Use a fresh output folder.")
+        _ck = torch.load(resume_path, map_location="cpu", weights_only=False)
+        predictor.load_state_dict(_ck["predictor"])
+        optimizer.load_state_dict(_ck["opt"])
+        if scaler is not None and _ck.get("scaler") is not None:
+            scaler.load_state_dict(_ck["scaler"])
+        start_epoch = int(_ck["epoch"])
+        logger.info(f"RESUMING from {resume_path}: epoch {start_epoch}, "
+                    f"last loss {_ck.get('loss')}")
+        del _ck
+    for _ in range(start_epoch * ipe):
+        scheduler.step()
+        wd_scheduler.step()
 
     def save_checkpoint(epoch, path):
         if rank != 0:
