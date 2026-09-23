@@ -1,0 +1,6 @@
+# The image needs exactly two files from the repo; everything else is mounted
+# at run time. Without this, `docker build .` uploads data.tar, data/ and the
+# checkpoints (~12 GB) as build context before doing anything.
+*
+!requirements.txt
+!server/install_sim_env.sh
