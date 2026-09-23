@@ -16,8 +16,10 @@ Branch: **`lab`**. Everything below runs from the repo root on the lab machine.
 ## 0. Before you leave your PC
 
 ```bash
-git push lab lab
+git push lab refs/heads/lab:refs/heads/lab
 ```
+
+(The branch and the remote are both named `lab`, so the short form is ambiguous.)
 
 Files to copy to the lab machine (from the Windows repo folder):
 
