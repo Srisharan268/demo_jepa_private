@@ -117,6 +117,7 @@ def save_demo_h5(
     out_h5: str,
     demo_obs: List,
     actions: np.ndarray,
+    commanded: Optional[np.ndarray] = None,
     image_hw: Optional[Tuple[int, int]] = None,
     camera_names: Optional[List[str]] = None,
     sim: bool = True,
@@ -186,6 +187,16 @@ def save_demo_h5(
             )
 
         root.create_dataset("action", data=action, dtype="float32")
+
+        # The source robot's COMMANDED poses. qpos (and hence the training
+        # action labels, which are diffs of qpos) is what THIS robot achieved;
+        # the gap between the two is its tracking error.
+        if commanded is not None:
+            root.create_dataset(
+                "commanded_pose",
+                data=np.asarray(commanded, dtype=np.float32)[:T],
+                dtype="float32",
+            )
 
 
 def save_meta(pair_root: str, meta: Dict) -> None:

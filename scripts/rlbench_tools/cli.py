@@ -9,7 +9,10 @@ def parse_args() -> RetargetConfig:
         description="Retarget RLBench demos with identical scene seeds."
     )
 
-    parser.add_argument("--save_path", type=str, default="/tmp/paired_dataset/")
+    # The DATASET ROOT the dataloader reads (it gets <task>/franka/, <task>/sawyer/).
+    # No /tmp default: that is purged on reboot, and is where the last dataset's
+    # scene files were most likely lost.
+    parser.add_argument("--save_path", type=str, required=True)
     parser.add_argument("--task", type=str, required=True)
 
     parser.add_argument("--source_robot", type=str, default="panda")
@@ -30,6 +33,9 @@ def parse_args() -> RetargetConfig:
 
     parser.add_argument("--max_demo_attempts", type=int, default=10)
     parser.add_argument("--retries_per_pair", type=int, default=2)
+    parser.add_argument("--max_track_err", type=float, default=0.0,
+                        help="optional: reject a pair if a replay ends a step this far (m) "
+                             "from the demo; 0 = off (recorded either way)")
 
     parser.add_argument("--settle_pos_eps", type=float, default=1e-3)
     parser.add_argument("--settle_ori_eps_deg", type=float, default=2.0)
@@ -65,6 +71,7 @@ def parse_args() -> RetargetConfig:
 
         max_demo_attempts=args.max_demo_attempts,
         retries_per_pair=args.retries_per_pair,
+        max_track_err=args.max_track_err,
 
         settle_pos_eps=args.settle_pos_eps,
         settle_ori_eps_deg=args.settle_ori_eps_deg,

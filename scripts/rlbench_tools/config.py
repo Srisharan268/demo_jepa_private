@@ -28,6 +28,11 @@ class RetargetConfig:
 
     max_demo_attempts: int = 10
     retries_per_pair: int = 2
+    # Optional rejection on tracking error (metres). 0 = off, the default: in
+    # contact tasks the object blocks the arm, so a large error at the contact
+    # step is normal and a gate would reject valid pairs. Task SUCCESS is the
+    # criterion; tracking error is recorded per episode for the pilot to judge.
+    max_track_err: float = 0.0
 
     settle_pos_eps: float = 1e-3
     settle_ori_eps_deg: float = 2.0

@@ -149,6 +149,36 @@ def verdict(name, ranked, min_margin):
     return True, detail
 
 
+def write_scene(out, task, name, rng_state, variation, seed, source_path, how):
+    """The folder server.py --episode_dir expects: rng_state.pkl + meta.json."""
+    pair_root = os.path.join(out, task, name)
+    os.makedirs(pair_root, exist_ok=True)
+    with open(os.path.join(pair_root, "rng_state.pkl"), "wb") as f:
+        pickle.dump(rng_state, f)
+    # server.py's load_meta only reads `task` and `variation`, and tolerates
+    # the file being absent, so a minimal record is enough.
+    with open(os.path.join(pair_root, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump({
+            "task": task,
+            "variation": int(variation),
+            "episode_seed_used": int(seed),
+            "source_episode": os.path.relpath(source_path, REPO),
+            "recovered_by": "server/recover_rng.py",
+            "how": how,
+        }, f, indent=2)
+    return pair_root
+
+
+def embedded_rng_state(a):
+    """Episodes from the current collector store their scene's RNG state in the
+    HDF5 itself -- no regeneration, no simulator, nothing to verify."""
+    if "rng_state_keys" not in a:
+        return None
+    return (str(a["rng_state_algo"]), np.asarray(a["rng_state_keys"], dtype=np.uint32),
+            int(a["rng_state_pos"]), int(a["rng_state_has_gauss"]),
+            float(a["rng_state_cached_gaussian"]))
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--data-root", default=os.path.join(REPO, "data", "val"))
@@ -221,6 +251,15 @@ def main():
         variation = int(a["variation"])
         source_robot = str(a.get("source_robot", "panda"))
 
+        embedded = embedded_rng_state(a)
+        if embedded is not None:
+            root = write_scene(args.out, task, name, embedded, variation, seed, path,
+                               "copied from the rng_state embedded in the episode")
+            print(f"[{i + 1}/{len(targets)}] {name}: OK (embedded rng_state) -> "
+                  f"{os.path.relpath(root, REPO)}", flush=True)
+            ok_n += 1
+            continue
+
         if str(a.get("robot", source_robot)) != source_robot:
             print(f"[{i + 1}/{len(targets)}] {name}: SKIP -- robot={a.get('robot')!r} is "
                   f"not the source ({source_robot!r}); point --robot-subdir at the "
@@ -245,7 +284,7 @@ def main():
         print(f"[{i + 1}/{len(targets)}] {name}  seed={seed} var={variation} ... ",
               end="", flush=True)
         try:
-            actions, rng_state, actual_var = generate_source_episode(cfg, variation, seed)
+            actions, rng_state, actual_var, _ = generate_source_episode(cfg, variation, seed)
         except Exception as e:
             print(f"FAILED to regenerate: {e}", flush=True)
             fail_n += 1
@@ -260,21 +299,9 @@ def main():
             failures.append((name, detail))
             continue
 
-        pair_root = os.path.join(args.out, task, name)
-        os.makedirs(pair_root, exist_ok=True)
-        with open(os.path.join(pair_root, "rng_state.pkl"), "wb") as f:
-            pickle.dump(rng_state, f)
-        # server.py's load_meta only reads `task` and `variation`, and tolerates
-        # the file being absent, so a minimal record is enough.
-        with open(os.path.join(pair_root, "meta.json"), "w", encoding="utf-8") as f:
-            json.dump({
-                "task": task,
-                "variation": int(actual_var),
-                "episode_seed_used": seed,
-                "source_episode": os.path.relpath(path, REPO),
-                "recovered_by": "server/recover_rng.py",
-                "verified": "qpos exact match",
-            }, f, indent=2)
+        pair_root = write_scene(args.out, task, name, rng_state, actual_var, seed, path,
+                                f"regenerated from the stored seed; verified by "
+                                f"nearest-neighbour endpoint ({detail})")
 
         print(f"OK ({detail}) -> {os.path.relpath(pair_root, REPO)}", flush=True)
         ok_n += 1
