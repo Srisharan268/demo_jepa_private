@@ -59,6 +59,11 @@ _ap.add_argument("--s2-batch", type=int, default=None,
                  help="stage 2 per-GPU batch (16 = paper global on 1 GPU)")
 _ap.add_argument("--warmup", type=int, default=None, help="warmup epochs (absolute)")
 _ap.add_argument("--anneal", type=int, default=None, help="anneal epochs (absolute)")
+_ap.add_argument("--stage1-ckpt", default=None,
+                 help="stage 1 checkpoint stage 2 trains against; default "
+                      "exp/stage1/latest.pt. For a pilot on an existing slim "
+                      "checkpoint, pass it here -- do NOT copy it into "
+                      "exp/stage1/, where stage 1's resume would pick it up.")
 _ap.add_argument("--source-fps", type=int, default=None,
                  help="frame rate of the collected episodes; default: read from "
                       "the hdf5 'dt' attribute. Only needed if that is missing.")
@@ -306,7 +311,7 @@ else:
     apply_schedule_overrides(d)
 # Stage 2 needs no accumulation, so app/vjepa_2_1_dreamer_ac/train.py is untouched.
 d["meta"]["pretrain_checkpoint"] = STAGE0_CKPT
-d["meta"]["dreamer_predictor_checkpoint"] = STAGE1_CKPT
+d["meta"]["dreamer_predictor_checkpoint"] = ARGS.stage1_ckpt or STAGE1_CKPT
 d["meta"]["load_predictor"] = True
 save(S2, d)
 
