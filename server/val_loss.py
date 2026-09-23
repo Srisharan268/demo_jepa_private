@@ -187,12 +187,21 @@ def main():
             # ~7x, so measure the model's OUTPUT change directly -- no target
             # needed: if swapping the action does not move the output, the
             # action is unused, whatever the target is.
+            # SAME metric as training's act-resp0 (dreamer_ac/train.py), so this
+            # gate's position-0 number is directly comparable to the pilot's
+            # first logged value: flip the direction of the pose actions (gripper
+            # is absolute, left alone), measure the output change in units of one
+            # real frame of latent change. A shuffle can leave position 0's action
+            # unchanged 1 time in 7; a flip cannot.
+            a_flip = actions.clone()
+            a_flip[..., :6] = -a_flip[..., :6]
             o_gt = step_predictor(_z, actions, _s)
-            o_sh = step_predictor(_z, actions[:, torch.randperm(actions.size(1), device=device)], _s)
+            o_fl = step_predictor(_z, a_flip, _s)
             T_ = o_gt.size(1) // tokens_per_frame
-            d = (o_gt - o_sh).view(bsz, T_, tokens_per_frame, -1).abs().mean(dim=(0, 2, 3))
-            ref = o_gt.view(bsz, T_, tokens_per_frame, -1).abs().mean(dim=(0, 2, 3))
-            sens.append((d / (ref + 1e-9)).float().cpu().numpy())
+            d = (o_gt - o_fl).view(bsz, T_, tokens_per_frame, -1).abs().mean(dim=(0, 2, 3))
+            frame = (h[:, tokens_per_frame:2 * tokens_per_frame]
+                     - h[:, :tokens_per_frame]).abs().mean() + 1e-8
+            sens.append((d / frame).float().cpu().numpy())
             variants = {
                 "gt": actions,
                 "zero": torch.zeros_like(actions),
@@ -210,10 +219,11 @@ def main():
 
     sv = np.mean(np.stack(sens), axis=0)
     print("\n" + "=" * 62)
-    print("action sensitivity by context length (|out(GT)-out(shuffled)| / |out|)")
+    print("action response by context length: |out(a) - out(-a)|, in frames of real")
+    print("latent change (same metric as training's act-resp; ~0 = action ignored)")
     for t, v in enumerate(sv):
         tag = "  <- DEPLOY regime (1 frame of context)" if t == 0 else ""
-        print(f"  position {t}  ({t + 1} frame ctx)  {v * 100:7.4f}%{tag}")
+        print(f"  position {t}  ({t + 1} frame ctx)  {v:8.4f}{tag}")
 
     gt, zero, shuf = (float(np.mean(got[k])) for k in ("gt", "zero", "shuf"))
     print(f"\n{'=' * 62}")
