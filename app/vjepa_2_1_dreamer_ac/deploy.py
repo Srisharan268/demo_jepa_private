@@ -565,6 +565,13 @@ def deploy_loop(params: dict, debugmode: bool = False) -> None:
     prev_goal = None
     obs_buffer = deque(maxlen=queue_horizon)
 
+    # Once IK wedges the arm, the observation stops changing, so the policy
+    # recomputes the same action and fails identically until max_steps --
+    # measured: 18 byte-identical failures in one episode. Failures can be
+    # transient (a run recovered after 5), so stop only on a long streak.
+    max_consecutive_fail = int(deploy_cfg.get("max_consecutive_ik_fail", 10))
+    consecutive_fail = 0
+
     step = 0
 
     try:
@@ -572,6 +579,12 @@ def deploy_loop(params: dict, debugmode: bool = False) -> None:
             data = get_observation(sock=sock, debugmode=debugmode)
 
             if step > 0 and server_episode_finished(data):
+                break
+
+            consecutive_fail = consecutive_fail + 1 if data.get("failed") else 0
+            if consecutive_fail >= max_consecutive_fail:
+                print(f"[CLIENT] {consecutive_fail} consecutive IK failures -- arm is "
+                      f"wedged and the observation is frozen. Stopping episode.")
                 break
 
             current_img, pose = process_observation(data)
