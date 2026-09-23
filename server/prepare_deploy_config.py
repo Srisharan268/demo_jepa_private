@@ -106,7 +106,35 @@ def main():
     c["deploy"]["reference_h5"] = reference_h5
     c["deploy"]["image_key"] = f"observations/images/{args.camera}"
     c["deploy"]["max_steps"] = args.max_steps
-    # mpc block left exactly as upstream.
+    # mpc guard keys left exactly as upstream; maxnorm/l1_threshold come from
+    # the committed template (see its comments).
+
+    # Temporal alignment, derived rather than typed: the reference stride must
+    # equal ONE action's span, which training fixed as ceil(data_fps / fps)
+    # raw frames (train.py passes tubelet_size=1). Read the capture rate from
+    # the reference demo itself and the planning rate from the stage 2 config
+    # training actually used, so the two cannot drift apart.
+    import h5py
+    from math import ceil
+    with h5py.File(reference_h5, "r") as _f:
+        _dt = _f.attrs.get("dt")
+    if _dt is None:
+        sys.exit(f"ERROR: {reference_h5} has no 'dt' attr; cannot derive the "
+                 f"reference frame rate.")
+    src_fps = int(round(1.0 / float(_dt)))
+    s2 = yaml.safe_load(open(os.path.join(REPO, "configs/train/vjepa_2_1_dreamer_ac.yaml")))
+    plan_fps = int(s2["data"]["fps"])
+    train_data_fps = int(s2["data"]["data_fps"])
+    if train_data_fps != src_fps:
+        sys.exit(f"ERROR: stage 2 was configured with data_fps={train_data_fps} but "
+                 f"the reference demo is {src_fps} Hz. Re-run prepare_configs.py "
+                 f"(it derives data_fps from the data) and RETRAIN stage 2 -- a "
+                 f"checkpoint trained at a different stride cannot be deployed here.")
+    if ceil(src_fps / plan_fps) != src_fps // plan_fps:
+        sys.exit(f"ERROR: {src_fps} Hz is not a multiple of {plan_fps} fps; training "
+                 f"(ceil) and deploy (floor) would disagree on the action stride.")
+    c["deploy"]["ref_data_fps"] = src_fps
+    c["deploy"]["ref_target_fps"] = plan_fps
 
     yaml.safe_dump(c, open(path, "w"), sort_keys=False)
 
@@ -119,6 +147,8 @@ def main():
     print(f"  mpc            {dict(mpc)}")
     print(f"                 ^ upstream repo defaults, NOT stated in the paper")
     print(f"  max_steps      {args.max_steps}")
+    print(f"  frame_skip     {src_fps} Hz // {plan_fps} fps = {src_fps // plan_fps} raw "
+          f"frames = one training action")
     print(f"\nReference demo is held-out ({REFERENCE_ROBOT}); the policy drives the")
     print(f"other embodiment. That cross-embodiment gap is the thing being measured.")
 

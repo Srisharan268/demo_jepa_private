@@ -25,12 +25,13 @@ construction -- it is literally where the arm went next.
   sensible action  -> world model and CEM are fine, cause is A
   still saturates  -> cause is B
 
-STRIDE. One training action spans 2 raw frames (dataset.py: primary_states
-[::frameskip], frameskip = tubelet_size = 2, fstp = ceil(data_fps/fps) = 1 for
-the checkpoint we have). That is a derivation from source, so --sweep re-checks
-it empirically instead of trusting it: if the model behaves best at some other
-stride, the derivation is wrong. Note this is NOT the dreamer's frame_skip --
-that one is bypassed here entirely, which is the whole point.
+STRIDE. One training action spans ceil(data_fps / fps) raw frames, read from the
+stage 2 config. train.py passes tubelet_size=1 to init_data (overriding the
+config's 2), so there is NO extra [::2] -- an earlier version of this docstring
+said 2 raw frames from exactly that misreading. With the corrected 20 Hz / 5 fps
+config the stride is 4; the pre-fix checkpoint (data_fps 5) was stride 1. --sweep
+re-checks empirically. Note this is NOT the dreamer's frame_skip -- that one is
+bypassed here entirely, which is the whole point.
 
 Beyond the CEM result this asks the model to SCORE three actions against the
 same goal, which separates a planner failure from a model failure:
@@ -156,7 +157,7 @@ def main():
                    help="use training geometry (scale 1.777); deploy builds 1.0, "
                         "which the encoder never saw in training")
     p.add_argument("--sweep", type=int, nargs="+", default=None,
-                   help="strides to try (default: just 2, the derived training stride)")
+                   help="strides to try (default: the training stride, from the config)")
     args = p.parse_args()
 
     ep = args.episode or (sorted(glob.glob(
@@ -193,10 +194,19 @@ def main():
     mpc = dict(world_model.mpc_args)
     mpc["abs_gripper"] = world_model.abs_gripper
 
+    # One action spans ceil(data_fps / fps) raw frames: train.py passes
+    # tubelet_size=1 to init_data, so there is no extra [::2]. Read from the
+    # stage 2 config training used rather than assumed.
+    from math import ceil
+    _s2 = yaml.safe_load(open(os.path.join(REPO, "configs/train/vjepa_2_1_dreamer_ac.yaml")))
+    train_stride = ceil(int(_s2["data"]["data_fps"]) / int(_s2["data"]["fps"]))
+    print(f"training action stride: {train_stride} raw frames "
+          f"(data_fps {_s2['data']['data_fps']} / fps {_s2['data']['fps']})")
+
     summary = []
-    for stride in (args.sweep or [2]):
+    for stride in (args.sweep or [train_stride]):
         print(f"\n--- stride {stride} raw frames "
-              f"{'(derived training stride)' if stride == 2 else ''} ---")
+              f"{'(training stride)' if stride == train_stride else ''} ---")
         rows = run_stride(world_model, wm, mpc, dtype, mixed, imgs, qpos,
                           stride, args.start, args.steps, maxnorm)
         if not rows:
@@ -219,7 +229,7 @@ def main():
     print(f"{'=' * 70}")
 
     # Verdict from the derived stride if it ran, else the best available.
-    s, sat, cos, ratio, pref = next((r for r in summary if r[0] == 2), summary[0])
+    s, sat, cos, ratio, pref = next((r for r in summary if r[0] == train_stride), summary[0])
     print(f"verdict from stride {s}:")
     if sat < 0.35 and cos > 0.3:
         print("  NOT saturated and heading agrees with ground truth against a true,")

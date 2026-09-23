@@ -59,6 +59,9 @@ _ap.add_argument("--s2-batch", type=int, default=None,
                  help="stage 2 per-GPU batch (16 = paper global on 1 GPU)")
 _ap.add_argument("--warmup", type=int, default=None, help="warmup epochs (absolute)")
 _ap.add_argument("--anneal", type=int, default=None, help="anneal epochs (absolute)")
+_ap.add_argument("--source-fps", type=int, default=None,
+                 help="frame rate of the collected episodes; default: read from "
+                      "the hdf5 'dt' attribute. Only needed if that is missing.")
 _ap.add_argument("--smoke", action="store_true",
                  help="tiny plumbing run: batch 1, accum 1, epochs 1, ipe 20")
 ARGS = _ap.parse_args()
@@ -155,6 +158,26 @@ def count_pairs(root):
         if os.path.isdir(d):
             n += len([f for f in os.listdir(d) if f.endswith((".hdf5", ".h5"))])
     return n
+
+
+def source_fps(root):
+    """Frame rate of the collected episodes, read from the data itself.
+
+    Stage 2 samples every ceil(data_fps / fps)-th raw frame, so data_fps must be
+    the TRUE capture rate. Upstream ships data_fps = fps = 5, which on 20 Hz sim
+    data samples every raw frame -- 4x the paper's 5 fps (Table 9). At that
+    density consecutive frames are near-identical, the next latent is trivially
+    extrapolable from context, and the action pathway goes untrained. A wrong
+    value fails silently, so it is read from the data rather than typed in.
+    """
+    import glob
+    import h5py
+    files = sorted(glob.glob(os.path.join(root, "*", "franka", "*.hdf5")))
+    if not files:
+        return None
+    with h5py.File(files[0], "r") as f:
+        dt = f.attrs.get("dt")
+    return None if dt is None else int(round(1.0 / float(dt)))
 
 
 def report(tag, cfg, accum):
@@ -255,6 +278,16 @@ d["folder"] = OUT_STAGE2
 d["data"]["dataset"] = DATASET
 d["data"]["camera_views"] = [CAMERA]
 d["data"]["data_type"] = "sim"
+# Paper Table 9: 5 fps. Keep fps, correct data_fps to the true capture rate.
+# train.py passes tubelet_size=1 to init_data (overriding the config's 2), so
+# one ACTION spans ceil(data_fps / fps) raw frames. Deploy's frame_skip must
+# equal that -- prepare_deploy_config.py derives it from the same two numbers.
+expect(d, ["data", "fps"], 5, S2)
+SRC_FPS = ARGS.source_fps or source_fps(DATASET)
+if SRC_FPS is None:
+    sys.exit(f"ERROR: cannot read the capture rate from {DATASET} (no hdf5 'dt' "
+             f"attr). Pass --source-fps; collection with dt=0.05 means 20.")
+d["data"]["data_fps"] = SRC_FPS
 # Stage 2 has NO accumulation support (app/vjepa_2_1_dreamer_ac/train.py is
 # untouched), so global batch is batch_size x N_GPUS. On few GPUs the batch
 # needed to hit 16 may not fit; cap it and report the shortfall honestly.

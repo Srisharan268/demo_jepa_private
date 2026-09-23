@@ -73,7 +73,7 @@ def main():
     p.add_argument("--train-transform", action="store_true",
                    help="use training's image geometry (scale 1.777) instead of deploy's 1.0")
     p.add_argument("--frameskip", type=int, default=None,
-                   help="dataset frameskip; default = tubelet_size, as init_data passes")
+                   help="dataset frameskip; default 1, as train.py passes to init_data")
     args = p.parse_args()
 
     params = yaml.safe_load(open(os.path.join(REPO, args.fname)))
@@ -114,7 +114,9 @@ def main():
 
     ds = UnifiedPairedH5Dataset(
         dataset=args.data, camera_views=[args.camera],
-        frameskip=(args.frameskip if args.frameskip else tubelet),
+        # train.py passes tubelet_size=1 to init_data (overriding the config's 2),
+        # so the dataset's frameskip is 1. Using tubelet (2) crashes the predictor.
+        frameskip=(args.frameskip if args.frameskip else 1),
         frames_per_clip=fpc, fps=fps, data_fps=data_fps, transform=transform,
         camera_frame=False, primary_subdir="franka", reference_subdir="sawyer",
     )

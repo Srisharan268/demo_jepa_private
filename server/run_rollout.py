@@ -206,7 +206,12 @@ def run_episode(ep, scene, args):
         "--host", "127.0.0.1", "--port", str(PORT),
         "--task", args.task, "--robot", args.robot,
         "--episode_dir", scene_dir,
-        "--image_size", "256", "256",
+        # Training frames were collected at 640x480 (cli.py and server.py both
+        # default to it). A 256x256 render is not a downscale of that -- the
+        # vision sensor keeps its angle along the longer side, so a square
+        # render sees a different vertical field of view. Match collection and
+        # let the deploy transform squash to 256 exactly as training did.
+        "--image_size", "640", "480",
         "--renderer", "opengl", "--headless",
         "--save_image_dir", frames_dir,
     ]

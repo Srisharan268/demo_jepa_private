@@ -456,8 +456,14 @@ def build_world_model(args: dict):
 
     transform = make_transforms(
         random_horizontal_flip=False,
-        random_resize_aspect_ratio=(1.0, 1.0),
-        random_resize_scale=(1.0, 1.0),
+        # MUST match training's data_aug. Training's scale [1.777, 1.777] makes
+        # every random crop too large to fit, so _get_param_spatial_crop falls
+        # back DETERMINISTICALLY to the whole 640x480 frame squashed to 256 --
+        # but only because 640/480 lies inside the ratio range (0.75, 1.35).
+        # The previous (1.0, 1.0) took a centre 480x480 crop instead, dropping
+        # 25% of the field of view from every frame the encoder saw at deploy.
+        random_resize_aspect_ratio=tuple(cfgs_data.get("random_resize_aspect_ratio", (0.75, 1.35))),
+        random_resize_scale=tuple(cfgs_data.get("random_resize_scale", (1.777, 1.777))),
         reprob=0.0,
         auto_augment=False,
         motion_shift=False,
