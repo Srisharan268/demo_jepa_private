@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Write the deploy/rollout config.
 
-Keeps the upstream repo's MPC settings:
+Keeps the upstream repo's MPC search settings:
 
-    samples: 200   cem_steps: 50   topk: 10   rollout: 1   maxnorm: 0.1
+    samples: 200   cem_steps: 50   topk: 10   rollout: 1
+
+maxnorm is OURS (template value, or --maxnorm), sized to the data's action
+scale; upstream shipped 0.1.
 
 *** THESE ARE NOT THE PAPER'S VALUES. *** Checked against arXiv 2605.20811 on
 2026-09-02: Algorithm 1 (Appendix B) defines population size N, elites K,
@@ -73,6 +76,12 @@ def main():
     p.add_argument("--max-steps", type=int, default=40, help="env steps per episode")
     p.add_argument("--deploy-ckpt", default=DEFAULT_DEPLOY_CKPT)
     p.add_argument("--stage1-ckpt", default=DEFAULT_STAGE1_CKPT)
+    # Measured values go in as flags, not yaml edits: the template is read from
+    # git HEAD, so an uncommitted edit to it would silently change nothing.
+    p.add_argument("--maxnorm", type=float, default=None,
+                   help="override mpc.maxnorm (measure it: RUNBOOK_LAB step 6)")
+    p.add_argument("--l1-threshold", type=float, default=None,
+                   help="override deploy.l1_threshold (RUNBOOK_LAB step 11)")
     args = p.parse_args()
 
     task, reference_h5 = pick_reference(args.task, args.camera)
@@ -135,6 +144,10 @@ def main():
                  f"(ceil) and deploy (floor) would disagree on the action stride.")
     c["deploy"]["ref_data_fps"] = src_fps
     c["deploy"]["ref_target_fps"] = plan_fps
+    if args.maxnorm is not None:
+        c["deploy"]["mpc"]["maxnorm"] = args.maxnorm
+    if args.l1_threshold is not None:
+        c["deploy"]["l1_threshold"] = args.l1_threshold
 
     yaml.safe_dump(c, open(path, "w"), sort_keys=False)
 
@@ -145,8 +158,11 @@ def main():
                      ("reference h5", reference_h5)):
         print(f"  {lbl:14s} {val}  [{'ok' if os.path.exists(val) else 'MISSING'}]")
     print(f"  mpc            {dict(mpc)}")
-    print(f"                 ^ upstream repo defaults, NOT stated in the paper")
+    print(f"                 ^ samples/cem_steps/topk/rollout: upstream defaults, NOT in")
+    print(f"                   the paper. maxnorm: ours, sized to the data (not upstream's 0.1)")
     print(f"  max_steps      {args.max_steps}")
+    print(f"  maxnorm        {c['deploy']['mpc']['maxnorm']}   "
+          f"l1_threshold {c['deploy']['l1_threshold']}")
     print(f"  frame_skip     {src_fps} Hz // {plan_fps} fps = {src_fps // plan_fps} raw "
           f"frames = one training action")
     print(f"\nReference demo is held-out ({REFERENCE_ROBOT}); the policy drives the")
