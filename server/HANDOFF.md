@@ -444,66 +444,97 @@ printed only `stdout` on failure while tracebacks go to `stderr`.
 plain commands over automation; honest probabilities over reassurance; say
 plainly when something cannot be de-risked.
 
-## 13. Temporal alignment (2026-09-10) — synced to the CURRENT checkpoint, NOT to the paper
+## 13. Why the rollouts failed, and what the `lab` branch fixes (2026-09-23)
 
-**Diagnosis.** Rollouts saturate: every action component pins to `±maxnorm` on
-every step, at every `maxnorm` tried (0.1, 0.01, 0.005 — only the time-to-wedge
-changed). Root cause is a train/deploy temporal mismatch, not policy quality.
+**Supersedes the previous §13**, whose stride derivation was wrong (it claimed
+one action = 2 raw frames; the correct figure is below).
 
-- AC predictor action stride = `2 * ceil(data_fps/fps)` raw frames
-  (`dataset.py`: `primary_states[::frameskip]`, `frameskip = tubelet_size = 2`).
-  The stage 2 checkpoint ran `data_fps: 5, fps: 5` → **one action = 2 raw frames**.
-- Deploy goal stride = `ref_data_fps // ref_target_fps`. Upstream 30/5 = **6**.
-- 3x gap → goal unreachable in one step → cost monotone over the whole action
-  box → saturation is guaranteed *even with a perfectly trained model*.
+### Root cause, established by measurement on the 4080 (2026-09-11)
 
-**What was changed** (`configs/inference/deploy_vjepa_2_1.yaml`, committed —
-`prepare_deploy_config.py` reads the config from `git show HEAD:` and only
-overrides `reference_h5` / `image_key` / `max_steps`, so values must be
-committed to take effect):
+The old stage 2 checkpoint **ignores action content**. With the exact training
+forward on training data, swapping GT actions for shuffled ones changed the
+loss by 1e-5 — consistent across deploy geometry/val, deploy geometry/train, and
+training geometry/train. So CEM had nothing to optimise: it returned the same
+corner `(−maxnorm, +maxnorm, +maxnorm)` for 20 different goals, and rollouts
+saturated, climbed instead of descending, and wedged.
 
-| key | was | now | why |
-|---|---|---|---|
-| `ref_data_fps` | 30 | 20 | true source rate: server `dt=0.05`; 93-frame demo = 4.6 s |
-| `ref_target_fps` | 5 | 10 | gives `frame_skip = 2` = the checkpoint's action stride |
-| `l1_threshold` | 1.0 | 0.28 | 1.0 is under chance (~1.13) so it never gated; 0.28 is deploy.py's own default. STILL UNCALIBRATED |
-| `mpc.maxnorm` | 0.1 | 0.02 | stride-2 training action scale is mean ~10 mm / max ~22 mm |
+This is the **optimum of the stated objective**, not a bug in the model. Paper
+§3.3: `L_plan = ||F_wm(z, s, a) − z_goal||²`, with `z_goal` the frozen
+dreamer's output — which does not depend on the action. The code matches the
+paper. With 8 frames of context and near-identical 20 Hz frames, `z_goal` is
+extrapolable from context alone, so the action pathway gets no gradient. Weights
+were healthy (`action_encoder` norm 7.67 > `state_encoder` 4.30) and the
+attention mask is correct; it simply went unused.
 
-**This is deliberately NOT paper-faithful.** It makes deploy consistent with the
-checkpoint that already exists, so that checkpoint can be evaluated without
-retraining.
+The training loss could not reveal this: it fell 0.315 → 0.102 throughout.
 
-### TODO — make it identical to the paper (requires retraining stage 2)
+### Facts corrected this session — trust these over anything earlier
 
-Paper Table 9 (Shared Training Configuration) specifies **FPS: 5**, tubelet 2,
-8 context frames, for *both* training stages. Source data here is 20 Hz, so:
+- **Action stride = `ceil(data_fps / fps)` raw frames.** `train.py` calls
+  `init_data(..., tubelet_size=1)`, overriding the config's 2, so there is NO
+  extra `[::2]`. The old checkpoint (`data_fps = fps = 5`) had stride **1**.
+- **Stage 2 trained at 20 fps, 4× the paper's 5** (Table 9). Upstream ships
+  `data_fps: 5`; the sim data is 20 Hz (`dt = 0.05`).
+- **Deploy's image transform was wrong.** Training's `scale [1.777, 1.777]`
+  forces a deterministic fallback to the WHOLE 640×480 frame; deploy's
+  `(1.0, 1.0)` centre-cropped 25% of the field of view. Verified by executing
+  `_get_param_spatial_crop`, not by reading it.
+- **Rollouts rendered at 256×256**, not the 640×480 of collection — introduced
+  in our own commit `c8fb3c5`.
+- **The paper's planner uses one frame of context** (Alg. 1:
+  `z_{t+H} = F_wm(z_t, s_t, a)`). Deploy's T=1 is correct; block-causal masking
+  makes position 0 of every training sequence exactly that case.
+- **Resume never worked** in either stage (stage 1 hardcoded `epoch = 0`;
+  stage 2 computed `resume_path` and never used it).
+- **Scenes are recoverable.** `episode_seed_used` is stamped in every HDF5;
+  `recover_rng.py` regenerates `rng_state.pkl` and verifies it (6/6 on the 4080).
+- **Training data was never overfit** in the sense previously claimed: 0.102 is
+  `jloss + sloss` against the dreamer output, not comparable to the 0.29–0.36
+  measured against the true next latent. That earlier claim is withdrawn.
 
-- Stage 2 should run `data_fps: 20, fps: 5` → `fstp = 4` → **one action = 8 raw
-  frames**, not 2. Current training is 4x finer than the paper.
-- Deploy must then be re-synced to `frame_skip = 8`, e.g. `ref_data_fps: 20,
-  ref_target_fps: 2.5` is not integer — use `ref_data_fps: 8, ref_target_fps: 1`
-  or equivalent. Re-derive `maxnorm` from the new (larger) action scale.
-- Paper §3.1 states no numeric value for the deploy offset Δ, only that it must
-  be "aligned with the planning frequency". §3.3's stage 1 offset `n` and jitter
-  `r` are likewise unspecified (code uses `variance_step: 6`). So alignment is
-  a stated *requirement*; the numbers are ours to derive.
+### The `lab` branch — one line, both sets of work
 
-### Still open, NOT fixed by the above
+Based on `cloud-test` (NoDDP, stage 1 metrics, shared encoder); scene restore
+and the diagnostics ported from `4080-scene-fix`. The 16 GB patch line is
+deliberately excluded. Commits, in order:
 
-- **Random rollout scene.** `server.py` supports `--episode_dir` but needs
-  `rng_state.pkl` + `meta.json` in the pair root; **neither exists anywhere in
-  `data/`**, so exact scene restore is impossible without re-collection.
-  Partial mitigation available: filenames encode the variation
-  (`variation10_...`), and `server.py` takes `--variation`, so at minimum the
-  rollout can be made to match the demo's variation instead of being fully
-  random. Training is UNAFFECTED — it pairs by identical filename across
-  `franka/`/`sawyer/`, i.e. matched scenes.
-- **IK deadlock.** `server_episode_finished` warns on `failed` and continues.
-  Once the arm wedges, the observation stops changing, so the policy emits the
-  same action forever and burns the rest of the episode.
-- **Is stage 2's action conditioning real?** Loss fell 0.315 → 0.102 (still
-  descending at epoch 36, no plateau) but the identity baseline was never
-  measured, so collapse-to-copy is not excluded. `WorldModel.dummy_test()`
-  in `cem_utils.py` settles it: run CEM against the TRUE next franka frame.
-  **The "next" frame must be `i+2`, matching the training stride** — `i+1` or
-  `i+6` silently reproduces the bug being tested for.
+1. consolidate branches; `PY_SIM`/`COPPELIASIM_ROOT` from env; `kill_stale`
+   pattern could never match run_rollout's own bare `server.py` launches
+2. resume in both stages (strict loads; hard error if resuming with an
+   unfrozen dreamer, which is not checkpointed)
+3. stage 2 **action response** metric: flip pose-action direction, measure the
+   output change in frames of real latent change; `check_stage2.py` fails if
+   position 0 falls below half its pretrained starting value
+4. deploy transform matches training; rollouts render 640×480; `data_fps`
+   derived from the data's `dt`; deploy `frame_skip` derived from the same
+   numbers, refusing a checkpoint trained at another stride
+5. stop an episode after 10 consecutive IK failures (a run did recover after 5)
+6. Docker image (`docker/`) + `--stage1-ckpt`, `--maxnorm`, `--l1-threshold` flags
+7. `server/RUNBOOK_LAB.md`
+
+**None of it has been executed** — written without torch or Docker. RUNBOOK_LAB
+steps 3–4 are the smoke test.
+
+### Open questions, in the order the runbook answers them
+
+1. **Does stage 1 use the demonstration?** Never tested. If the dreamer ignores
+   the sawyer reference, `z_goal ≈ f(franka context)` and stage 2 can never need
+   actions, however it is configured. `dreamer_test.py` (RUNBOOK_LAB step 7).
+2. **Does the Meta-pretrained AC predictor respond to our actions?** The
+   baseline stage 2 must not destroy (step 8).
+3. **Does the 5 fps fix keep the action pathway alive?** Hypothesis, not
+   established. The 1 h pilot (step 10) answers it via `act-resp0`.
+4. If (3) fails: cut `dataset_fpcs` 8 → 2 so less history is available to
+   extrapolate from. Deviates from Table 9. `prepare_configs.py` reads configs
+   from git HEAD, so this needs a commit, not a working-tree edit.
+
+### Two datasets exist — use the local one
+
+- **Local / `data.tar`**: 362 train + 40 val, `variation*_b1_chunk_*`,
+  `franka/` layout. Stage 2's old checkpoint trained on this. Loader-ready.
+  May have `source_robot: sawyer` (RUNBOOK_LAB step 5 checks).
+- **4080**: 402 train + 6 val, `variation0_NNNN`, `panda/` layout (loader needs
+  a `franka` symlink). Different collection; source robot `panda`.
+
+The old `stage2_deploy.pt` exists only on the (offline) 4080. It cannot be
+deployed at the corrected stride anyway; `prepare_deploy_config.py` refuses it.
