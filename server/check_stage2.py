@@ -64,6 +64,23 @@ if rows:
     chk("gap did not widen materially", ratioN <= ratio0 * 1.2,
         "sloss is the AUTOREGRESSIVE rollout -- what MPC actually runs")
 
+print("--- action conditioning (the failure a clean loss curve hides) ---")
+# The loss targets the dreamer's output, which does not depend on the action, so
+# a model that IGNORES actions minimises it perfectly well -- a previous run's
+# loss fell 0.315 -> 0.102 while its action pathway went dead, and CEM then had
+# nothing to optimise. The AC predictor starts Meta-pretrained, so its response
+# at the first logged step is a working baseline on THIS data; judge the end
+# against that rather than against an invented absolute threshold.
+ar = [float(a) for a in re.findall(r"action response: pos0 ([-\d.e+]+|nan)", text)]
+ar = [a for a in ar if a == a]
+chk("action-response lines parsed", len(ar) > 2, f"{len(ar)} found")
+if ar:
+    first, last = ar[0], ar[-1]
+    chk("position-0 action response did not collapse",
+        last >= 0.5 * first,
+        f"{first:.4f} -> {last:.4f} frames of real change  (~0 = dead; "
+        f"pos 0 is the one-frame regime the planner uses)")
+
 print("--- artifacts ---")
 for p, why in (("exp/stage2/latest.pt", "needed by make_deploy_ckpt.py"),
                ("exp/stage2/log_r0.csv", "per-iteration curve"),

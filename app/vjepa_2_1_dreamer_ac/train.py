@@ -226,6 +226,10 @@ def main(args, resume_preempt=False):
         ("%d", "epoch"),
         ("%d", "itr"),
         ("%.5f", "loss"),
+        ("%.5f", "jloss"),
+        ("%.5f", "sloss"),
+        ("%.5f", "act-resp0"),
+        ("%.5f", "act-resp"),
         ("%d", "iter-time(ms)"),
         ("%d", "gpu-time(ms)"),
         ("%d", "dataload-time(ms)"),
@@ -573,6 +577,31 @@ def main(args, resume_preempt=False):
                     sloss = loss_fn_dreamer(z_ar, dreamer_target_feature)
                     loss = jloss + sloss
 
+                    # -- ACTION RESPONSE: does the prediction depend on the action?
+                    # The loss cannot tell you: it targets the dreamer's output,
+                    # a function of the frames alone, so a model that IGNORES
+                    # actions minimises it fine -- a previous run's loss fell
+                    # 0.315 -> 0.102 while its action pathway learned nothing.
+                    # Flip the direction of the pose actions (gripper is absolute,
+                    # left alone) and measure how far the output moves, in units
+                    # of one REAL frame of latent change. ~0 = dead; order 1 =
+                    # alive. act_resp0 is position 0 -- one frame of context,
+                    # exactly the regime the planner uses at deploy.
+                    act_resp0 = act_resp = float("nan")
+                    if itr % log_freq == 0:
+                        with torch.no_grad():
+                            a_flip = actions.clone()
+                            a_flip[..., :6] = -a_flip[..., :6]
+                            _e = extrinsics[:, :-1] if use_extrinsics else None
+                            z_flip = predictor(h[:, :-tokens_per_frame], a_flip, states[:, :-1], _e)
+                            if normalize_reps:
+                                z_flip = F.layer_norm(z_flip, (z_flip.size(-1),))
+                            _d = (z_tf.detach() - z_flip).abs()
+                            _frame = (h[:, tokens_per_frame:2 * tokens_per_frame]
+                                      - h[:, :tokens_per_frame]).abs().mean() + 1e-8
+                            act_resp0 = float(_d[:, :tokens_per_frame].mean() / _frame)
+                            act_resp = float(_d.mean() / _frame)
+
                 # Step 2. Backward & step
                 if mixed_precision:
                     scaler.scale(loss).backward()
@@ -590,6 +619,8 @@ def main(args, resume_preempt=False):
                     float(loss),
                     float(jloss),
                     float(sloss),
+                    act_resp0,
+                    act_resp,
                     _new_lr,
                     _new_wd,
                 )
@@ -598,6 +629,8 @@ def main(args, resume_preempt=False):
                 loss,
                 jloss,
                 sloss,
+                act_resp0,
+                act_resp,
                 _new_lr,
                 _new_wd,
             ), gpu_etime_ms = gpu_timer(train_step)
@@ -611,7 +644,12 @@ def main(args, resume_preempt=False):
 
             # -- Logging
             def log_stats():
-                csv_logger.log(epoch + 1, itr, loss, iter_elapsed_time_ms, gpu_etime_ms, data_elapsed_time_ms)
+                csv_logger.log(epoch + 1, itr, loss, jloss, sloss, act_resp0, act_resp,
+                               iter_elapsed_time_ms, gpu_etime_ms, data_elapsed_time_ms)
+                if itr % log_freq == 0:
+                    logger.info("[%d, %5d] action response: pos0 %.4f  all %.4f  "
+                                "(frames of real change; ~0 = action pathway dead)"
+                                % (epoch + 1, itr, act_resp0, act_resp))
                 if (itr % log_freq == 0) or (itr == ipe - 1) or np.isnan(loss) or np.isinf(loss):
                     logger.info(
                         "[%d, %5d] loss: %.3f [%.2f, %.2f] "
@@ -650,6 +688,9 @@ def main(args, resume_preempt=False):
                     # rollout success.
                     "sloss_minus_jloss": sloss_meter.avg - jloss_meter.avg,
                     "sloss_over_jloss": sloss_meter.avg / max(jloss_meter.avg, 1e-9),
+                    # Measured only every log_freq iterations; nan otherwise.
+                    "act_resp0": act_resp0,
+                    "act_resp": act_resp,
                     "wd": _new_wd,
                     "lr": _new_lr,
                     "mem": torch.cuda.max_memory_allocated() / 1024.0**2,
