@@ -190,6 +190,25 @@ def write_episode_config(ep, reference_h5, out_dir):
     return path
 
 
+def server_action_args():
+    """Make server.py execute the action CEM actually chose.
+
+    CEM clips each xyz/rpy component to +/- mpc.maxnorm and, with abs_gripper,
+    emits an ABSOLUTE gripper value. server.py defaulted to clipping xyz at 3 cm
+    (silently cutting a 5 cm plan short) and to RELATIVE gripper control (an
+    absolute 0..1 added to an open gripper's 1.0 can never close it).
+    """
+    import math
+    import yaml
+    d = yaml.safe_load(open(os.path.join(REPO, DEPLOY_CFG)))["deploy"]
+    maxnorm = float(d["mpc"]["maxnorm"])
+    return [
+        "--max_pos_clip", str(maxnorm),
+        "--max_rot_clip_deg", str(max(20.0, math.degrees(maxnorm))),
+        "--gripper_control_mode", "absolute" if d.get("abs_gripper", True) else "relative",
+    ]
+
+
 def run_episode(ep, scene, args):
     scene_name, scene_dir, reference_h5 = scene
     frames_dir = os.path.join(args.out, f"ep{ep}")
@@ -212,9 +231,11 @@ def run_episode(ep, scene, args):
         # render sees a different vertical field of view. Match collection and
         # let the deploy transform squash to 256 exactly as training did.
         "--image_size", "640", "480",
-        "--renderer", "opengl", "--headless",
+        # Collection renders with opengl3 (cli.py / play.py default); opengl
+        # shades differently, so rollout frames would not look like training's.
+        "--renderer", "opengl3", "--headless",
         "--save_image_dir", frames_dir,
-    ]
+    ] + server_action_args()
     with open(server_log, "w") as log:
         srv = subprocess.Popen(cmd, cwd=os.path.join(REPO, "scripts", "rlbench_tools"),
                                env=sim_env(), stdout=log, stderr=subprocess.STDOUT)
