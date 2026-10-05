@@ -44,6 +44,10 @@ PY_SIM=${PY_SIM:-$(dirname "$(dirname "$(command -v conda)")")/envs/rlbench/bin/
 command -v Xvfb >/dev/null || { echo "Xvfb missing (apt install xvfb)" >&2; exit 1; }
 export COPPELIASIM_ROOT LD_LIBRARY_PATH="$COPPELIASIM_ROOT${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export QT_QPA_PLATFORM_PLUGIN_PATH="$COPPELIASIM_ROOT"
+# No GPU GL in a container: Xvfb renders with Mesa llvmpipe, which by default
+# spawns one render thread PER CORE in EVERY process -- 100 workers on a
+# 128-thread box would fight over 12,800 threads. One worker = one core.
+export LP_NUM_THREADS=${LP_NUM_THREADS:-1} OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 
 mkdir -p "$LOGS"
 cd "$REPO/scripts/rlbench_tools"
