@@ -65,12 +65,26 @@ def workspace_bounds(start_pos, args):
     return lo, np.maximum(hi, lo + 0.02), src
 
 
+def sample_waypoint(rng, lo, hi, args):
+    """Uniform in the box -- except, with prob low_bias, z is drawn from the band
+    just above the table. Uniform z leaves the arm mid-air (pilot: never below
+    0.9 m with the button at ~0.78 m), but the end of every push_button rollout
+    happens down there, so that is where the model must know what actions do."""
+    wp = rng.uniform(lo, hi)
+    if rng.random() < args.low_bias:
+        wp[2] = rng.uniform(lo[2], min(hi[2], lo[2] + args.low_band))
+    return wp
+
+
 def sample_action(rng, cur_pos, cur_rot, start_rot, waypoint, args):
     """One random 7-d delta action [dxyz, drpy, gripper-toggle]."""
     to_wp = waypoint - cur_pos
-    dist = np.linalg.norm(to_wp)
-    speed = rng.uniform(0.0, args.xyz_max)
-    drift = to_wp / max(dist, 1e-6) * min(dist, speed)
+    # 50-100% of full speed: from the start pose (~1.47 m) a 0-100% drift could
+    # not reach the table (0.75 m) within an episode.
+    speed = rng.uniform(0.5, 1.0) * args.xyz_max
+    # Per axis, not along the 3-D direction: with a waypoint off to the side the
+    # vertical share was ~25 mm/action and the arm never reached the table.
+    drift = np.clip(to_wp, -speed, speed)
     noise = rng.uniform(-args.xyz_max, args.xyz_max, 3) * args.noise_frac
     dxyz = np.clip(drift + noise, -args.xyz_max, args.xyz_max)
 
@@ -95,15 +109,20 @@ def run_episode(task_env, env, rng, args):
     lo, hi, src = workspace_bounds(start_pos, args)
 
     frames, commanded = [], []
-    waypoint = rng.uniform(lo, hi)
+    # First waypoint near the table: episodes start ~0.7 m above it.
+    waypoint = sample_waypoint(rng, lo, hi, args)
+    waypoint[2] = rng.uniform(lo[2], min(hi[2], lo[2] + args.low_band))
     wp_age, n_fail, consec_fail = 0, 0, 0
+    descended = False
     grip = float(obs.gripper_open > 0.5)
 
     for _ in range(args.actions):
         cur_pos = np.asarray(obs.gripper_pose[:3], dtype=np.float64)
         cur_rot = Rotation.from_quat(obs.gripper_pose[3:7])
-        if np.linalg.norm(waypoint - cur_pos) < 0.02 or wp_age >= args.wp_every:
-            waypoint, wp_age = rng.uniform(lo, hi), 0
+        # The first waypoint (near the table) is held until reached.
+        if np.linalg.norm(waypoint - cur_pos) < 0.02 or (wp_age >= args.wp_every and descended):
+            descended = True
+            waypoint, wp_age = sample_waypoint(rng, lo, hi, args), 0
         wp_age += 1
 
         dxyz, drpy, toggle = sample_action(rng, cur_pos, cur_rot, start_rot, waypoint, args)
@@ -136,7 +155,7 @@ def run_episode(task_env, env, rng, args):
         else:
             n_fail += 1
             consec_fail += 1
-            waypoint, wp_age = rng.uniform(lo, hi), 0
+            waypoint, wp_age = sample_waypoint(rng, lo, hi, args), 0
             obs = task_env.get_observation()
             if consec_fail >= args.max_consec_fail:
                 break
@@ -163,6 +182,9 @@ def main():
     p.add_argument("--noise_frac", type=float, default=0.6)
     p.add_argument("--wp_every", type=int, default=8)
     p.add_argument("--grip_prob", type=float, default=0.05)
+    p.add_argument("--low_bias", type=float, default=0.5,
+                   help="fraction of waypoints in the band just above the table")
+    p.add_argument("--low_band", type=float, default=0.15, help="m above the z floor")
     p.add_argument("--box", type=float, default=0.25)
     p.add_argument("--z_margin", type=float, default=0.03)
     p.add_argument("--max_consec_fail", type=int, default=10)
