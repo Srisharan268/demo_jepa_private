@@ -59,6 +59,13 @@ def load_pretrained(
         pretrained_dict = {k.replace("backbone.", ""): v for k, v in pretrained_dict.items()}
         msg = predictor.load_state_dict(pretrained_dict, strict=False)
         logger.info(f"loaded pretrained predictor from epoch {epoch} with msg: {msg}")
+        # strict=False "succeeds" when a key prefix mismatch binds NOTHING
+        # (HANDOFF §6). Fine-tuning a randomly initialised predictor would look
+        # like training while discarding the pretrained action pathway.
+        n_model = len(predictor.state_dict())
+        if len(msg.missing_keys) == n_model:
+            raise RuntimeError(f"pretrained predictor bound 0/{n_model} keys from {r_path}; "
+                               f"checkpoint key e.g. {next(iter(pretrained_dict))!r}")
 
     if load_encoder:
         if target_encoder is not None:
@@ -67,6 +74,9 @@ def load_pretrained(
             pretrained_dict = {k.replace("backbone.", ""): v for k, v in pretrained_dict.items()}
             msg = target_encoder.load_state_dict(pretrained_dict, strict=False)
             logger.info(f"loaded pretrained target encoder from epoch {epoch} with msg: {msg}")
+            n_model = len(target_encoder.state_dict())
+            if len(msg.missing_keys) == n_model:
+                raise RuntimeError(f"pretrained target encoder bound 0/{n_model} keys from {r_path}")
 
     del checkpoint
 

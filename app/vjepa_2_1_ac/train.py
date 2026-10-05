@@ -40,6 +40,7 @@ from app.vjepa_2_1_ac.utils import (
 )
 from src.utils.distributed import init_distributed
 from src.utils.logging import AverageMeter, CSVLogger, get_logger, gpu_timer
+from src.utils.single_gpu import wrap_ddp
 
 # import torch.distributed as dist
 # from datetime import timedelta
@@ -213,6 +214,8 @@ def main(args, resume_preempt=False):
         ("%d", "epoch"),
         ("%d", "itr"),
         ("%.5f", "loss"),
+        ("%.5f", "act-resp0"),
+        ("%.5f", "act-resp"),
         ("%d", "iter-time(ms)"),
         ("%d", "gpu-time(ms)"),
         ("%d", "dataload-time(ms)"),
@@ -263,12 +266,17 @@ def main(args, resume_preempt=False):
     )
 
     # -- init data-loaders/samplers
+    # Upstream passed data_path= (init_data's parameter is `dataset`: TypeError)
+    # and omitted data_fps, which then defaults to 5 -- on 20 Hz sim data that
+    # samples every raw frame, 4x the paper's 5 fps, the regime in which the
+    # action pathway went untrained. Stage 2 gets the same two values.
     (unsupervised_loader, unsupervised_sampler) = init_data(
-        data_path=dataset,
+        dataset=dataset,
         batch_size=batch_size,
         frames_per_clip=max_num_frames,
         tubelet_size=1,
         fps=fps,
+        data_fps=data_fps,
         camera_views=camera_views,
         transform=transform,
         collator=video_collator,
@@ -301,10 +309,12 @@ def main(args, resume_preempt=False):
         betas=betas,
         eps=eps,
     )
-    encoder = DistributedDataParallel(encoder, static_graph=True)
-    predictor = DistributedDataParallel(predictor, static_graph=False, find_unused_parameters=True)
+    # wrap_ddp: real DDP at world_size > 1, NoDDP (same `module.` key shape, no
+    # gradient buckets) at one GPU -- ~8 GB saved, as in stages 1 and 2.
+    encoder = wrap_ddp(encoder, world_size, static_graph=True)
+    predictor = wrap_ddp(predictor, world_size, static_graph=False, find_unused_parameters=True)
     logger.info("Encoder and predictor have been wrapped with DDP.")
-    target_encoder = DistributedDataParallel(target_encoder)
+    target_encoder = wrap_ddp(target_encoder, world_size)
     logger.info("Target encoder has been wrapped with DDP.")
     for p in target_encoder.parameters():
         p.requires_grad = False
@@ -502,6 +512,25 @@ def main(args, resume_preempt=False):
                     sloss = loss_fn(z_ar, h)
                     loss = jloss + sloss
 
+                    # -- ACTION RESPONSE, identical to stage 2's: flip the pose
+                    # actions, measure how far the prediction moves, in frames
+                    # of real latent change. pos0 (one frame of context) is the
+                    # regime the planner uses. This is the stage 0 go/no-go.
+                    act_resp0 = act_resp = float("nan")
+                    if itr % log_freq == 0:
+                        with torch.no_grad():
+                            a_flip = actions.clone()
+                            a_flip[..., :6] = -a_flip[..., :6]
+                            _e = extrinsics[:, :-1] if use_extrinsics else None
+                            z_flip = predictor(h[:, :-tokens_per_frame], a_flip, states[:, :-1], _e)
+                            if normalize_reps:
+                                z_flip = F.layer_norm(z_flip, (z_flip.size(-1),))
+                            _d = (z_tf.detach() - z_flip).abs()
+                            _frame = (h[:, tokens_per_frame:2 * tokens_per_frame]
+                                      - h[:, :tokens_per_frame]).abs().mean() + 1e-8
+                            act_resp0 = float(_d[:, :tokens_per_frame].mean() / _frame)
+                            act_resp = float(_d.mean() / _frame)
+
                 # Step 2. Backward & step
                 if mixed_precision:
                     scaler.scale(loss).backward()
@@ -519,6 +548,8 @@ def main(args, resume_preempt=False):
                     float(loss),
                     float(jloss),
                     float(sloss),
+                    act_resp0,
+                    act_resp,
                     _new_lr,
                     _new_wd,
                 )
@@ -527,6 +558,8 @@ def main(args, resume_preempt=False):
                 loss,
                 jloss,
                 sloss,
+                act_resp0,
+                act_resp,
                 _new_lr,
                 _new_wd,
             ), gpu_etime_ms = gpu_timer(train_step)
@@ -540,7 +573,12 @@ def main(args, resume_preempt=False):
 
             # -- Logging
             def log_stats():
-                csv_logger.log(epoch + 1, itr, loss, iter_elapsed_time_ms, gpu_etime_ms, data_elapsed_time_ms)
+                csv_logger.log(epoch + 1, itr, loss, act_resp0, act_resp,
+                               iter_elapsed_time_ms, gpu_etime_ms, data_elapsed_time_ms)
+                if itr % log_freq == 0:
+                    logger.info("[%d, %5d] action response: pos0 %.4f  all %.4f  "
+                                "(frames of real change; ~0 = action pathway dead)"
+                                % (epoch + 1, itr, act_resp0, act_resp))
                 if (itr % log_freq == 0) or (itr == ipe - 1) or np.isnan(loss) or np.isinf(loss):
                     logger.info(
                         "[%d, %5d] loss: %.3f [%.2f, %.2f] "
@@ -572,6 +610,8 @@ def main(args, resume_preempt=False):
                     "loss": loss_meter.avg,
                     "jloss": jloss_meter.avg,
                     "sloss": sloss_meter.avg,
+                    **({"act_resp0": act_resp0, "act_resp": act_resp}
+                       if itr % log_freq == 0 else {}),
                     "wd": _new_wd,
                     "lr": _new_lr,
                     "mem": torch.cuda.max_memory_allocated() / 1024.0**2,

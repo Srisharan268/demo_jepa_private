@@ -67,6 +67,12 @@ _ap.add_argument("--stage1-ckpt", default=None,
 _ap.add_argument("--source-fps", type=int, default=None,
                  help="frame rate of the collected episodes; default: read from "
                       "the hdf5 'dt' attribute. Only needed if that is missing.")
+_ap.add_argument("--s0-steps", type=int, default=4000,
+                 help="stage 0 fine-tune length in optimizer steps")
+_ap.add_argument("--s0-batch", type=int, default=16, help="stage 0 per-GPU batch")
+_ap.add_argument("--stage2-init", default=None,
+                 help="AC world model stage 2 starts from; default Meta's repacked "
+                      "checkpoint. After stage 0: exp/stage0/latest.pt")
 _ap.add_argument("--smoke", action="store_true",
                  help="tiny plumbing run: batch 1, accum 1, epochs 1, ipe 20")
 ARGS = _ap.parse_args()
@@ -80,6 +86,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Produced by: python server/split_dataset.py
 DATASET = os.path.join(REPO, "data", "train")
 HELD_OUT = os.path.join(REPO, "data", "val")     # used by eval + deploy, not training
+PLAY = os.path.join(REPO, "data", "play")        # random-action franka episodes (play.py)
+STAGE0_DATA = os.path.join(REPO, "data", "stage0")  # symlinks: train franka + play franka
+OUT_STAGE0 = os.path.join(REPO, "exp", "stage0")
 OUT_STAGE1 = os.path.join(REPO, "exp", "stage1")  # exp/ is gitignored
 OUT_STAGE2 = os.path.join(REPO, "exp", "stage2")
 
@@ -114,6 +123,7 @@ STAGE1_CKPT = os.path.join(OUT_STAGE1, "latest.pt")
 
 FATAL = []
 
+S0 = "configs/train/vjepa_2_1_ac.yaml"
 S1 = "configs/train/vjepa_2_1_dreamer_predictor.yaml"
 S2 = "configs/train/vjepa_2_1_dreamer_ac.yaml"
 
@@ -310,16 +320,88 @@ else:
         d["optimization"]["epochs"] = ARGS.epochs
     apply_schedule_overrides(d)
 # Stage 2 needs no accumulation, so app/vjepa_2_1_dreamer_ac/train.py is untouched.
-d["meta"]["pretrain_checkpoint"] = STAGE0_CKPT
+# Its AC predictor starts from --stage2-init: Meta's checkpoint, or our stage 0
+# fine-tune (same keys: stage 0 saves through NoDDP, so `module.`-prefixed).
+d["meta"]["pretrain_checkpoint"] = ARGS.stage2_init or STAGE0_CKPT
 d["meta"]["dreamer_predictor_checkpoint"] = ARGS.stage1_ckpt or STAGE1_CKPT
 d["meta"]["load_predictor"] = True
 save(S2, d)
 
+# ---------------------------------------------------------------- Stage 0 ---
+# The paper trains the AC world model itself (stage 0, 8xA100 x 7 days) on
+# RLBench Franka trajectories, with a loss against the REAL next frame. We
+# skipped it and borrowed Meta's DROID-trained predictor, which had never seen
+# RLBench. Here: a short in-domain fine-tune of that predictor, same trainer,
+# same loss, on the train split's franka episodes plus random-action "play"
+# episodes (data/play, from play.py). Play data is what makes actions
+# necessary: from one frame, a planner demo's next motion is predictable from
+# the scene, a random action's is not -- and random actions from a given state
+# are exactly what CEM asks the model about at deploy.
+def build_stage0_dir():
+    """data/stage0/<task>_{paired,play} -> the franka dirs. Never touches data/val."""
+    os.makedirs(STAGE0_DATA, exist_ok=True)
+    counts = {}
+    for root, tag in ((DATASET, "paired"), (PLAY, "play")):
+        if not os.path.isdir(root):
+            continue
+        for task in sorted(os.listdir(root)):
+            src = os.path.join(root, task, "franka")
+            if not os.path.isdir(src):
+                continue
+            dst = os.path.join(STAGE0_DATA, f"{task}_{tag}")
+            if os.path.islink(dst):
+                os.remove(dst)
+            os.symlink(os.path.relpath(src, STAGE0_DATA), dst)
+            counts[f"{task}_{tag}"] = len([f for f in os.listdir(src) if f.endswith((".hdf5", ".h5"))])
+    return counts
+
+z = load(S0)
+expect(z, ["data", "batch_size"], 16, S0)
+expect(z, ["data", "fps"], 5, S0)
+expect(z, ["meta", "load_predictor"], False, S0)
+z["folder"] = OUT_STAGE0
+z["data"]["dataset"] = STAGE0_DATA
+z["data"]["camera_views"] = [CAMERA]
+z["data"]["data_fps"] = SRC_FPS
+z["data"]["batch_size"] = 2 if ARGS.smoke else ARGS.s0_batch
+z["data"]["num_workers"] = 2 if ARGS.smoke else NUM_WORKERS
+z["meta"]["pretrain_checkpoint"] = STAGE0_CKPT
+z["meta"]["load_predictor"] = True        # fine-tune Meta's predictor, not from scratch
+# ~13 GB per checkpoint (encoder + target encoder + predictor + optimiser):
+# keep latest.pt only. Upstream's 25 would keep e0.pt, an untrained copy.
+z["meta"]["save_every_freq"] = -1
+if ARGS.smoke:
+    z["optimization"].update(epochs=1, ipe=20, warmup=0, anneal=0)
+else:
+    # lr / weight decay stay upstream's -- the same values stage 2 uses to
+    # fine-tune this same predictor. Only the length changes: 4000 steps, not
+    # upstream's from-scratch 315 x 300.
+    S0_IPE = 200
+    z["optimization"].update(ipe=S0_IPE, epochs=max(4, -(-ARGS.s0_steps // S0_IPE)),
+                             warmup=1, anneal=2)
+save(S0, z)
+S0_COUNTS = build_stage0_dir()
+
 print("configs written\n")
 # Report from the in-memory configs we just wrote -- load() now reads git HEAD,
 # so it would report upstream's values, not ours.
+zo = z["optimization"]
+print(f"  stage 0: batch_size={z['data']['batch_size']}, {zo['epochs']} x {zo['ipe']} = "
+      f"{zo['epochs'] * zo['ipe']} steps, data_fps {SRC_FPS} -> stride "
+      f"{-(-SRC_FPS // z['data']['fps'])}")
+for name, n in S0_COUNTS.items():
+    print(f"      {name:22s} {n} franka episodes")
+if not any(k.endswith("_play") for k in S0_COUNTS):
+    print("      *** no play episodes (data/play/<task>/franka): stage 0 would see only")
+    print("          planner demos, where actions are predictable from the scene.")
+if sum(S0_COUNTS.values()) < z["data"]["batch_size"]:
+    print(f"      *** FATAL: fewer stage 0 episodes than batch_size -- training would hang.")
+    FATAL.append("stage 0")
 report("stage 1", c, S1_ACCUM)
 report("stage 2", d, 1)
+if not ARGS.stage2_init:
+    print("      (stage 2 starts from Meta's predictor; after stage 0 rerun with "
+          "--stage2-init exp/stage0/latest.pt)")
 print("\nUnchanged from upstream: model, crop_size, dataset_fpcs, epochs, ipe,")
 print("lr, start_lr, final_lr, warmup, anneal, weight_decay, loss settings.")
 

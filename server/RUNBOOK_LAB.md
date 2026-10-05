@@ -168,6 +168,40 @@ uses):
   data and RLBench. Stage 2 must build conditioning from scratch — a harder
   problem. Send me the output.
 
+## 8b. STAGE 0 — teach the AC predictor our actions  (~3–5 h, the go/no-go)
+
+Why: the paper trains the world model on RLBench Franka data first (stage 0,
+loss against the real next frame). We skipped it, so the predictor never learned
+RLBench, and stage 2's loss (against the dreamer's goal) cannot teach action use
+when demos make the next motion predictable from the scene. Stage 0 here = a short
+fine-tune of Meta's predictor on train-split franka episodes + **play** episodes
+(random actions, `scripts/rlbench_tools/play.py`), where only the action predicts
+the next frame.
+
+Play data (CPU, run alongside the paired collection; ~1/3 the cost of a pair;
+aim for about as many play episodes as pairs; a distinct `--seed_master` per process):
+
+```bash
+cd scripts/rlbench_tools && $PY_SIM play.py --save_path ../../data/play --task push_button --episodes 50 --seed_master 1 --headless
+```
+
+Check the `[OK]` lines: per-action move should be tens of mm; few IK failures; a
+GIF of one episode should show the arm wandering the table, not stuck.
+
+```bash
+bash docker/run.sh python server/prepare_configs.py --gpus 1      # prints stage 0 episode counts
+tmux new -s s0
+bash docker/run.sh bash -c 'bash server/run_stage0.sh 2>&1 | tee stage0.log'
+grep "action response" stage0.log | tail -5
+grep "mem:" stage0.log | tail -1        # MB; batch 16 should leave headroom on 48 GB
+```
+
+- **pos0 rises, or holds clearly above 0** → GO. Then stage 2 starts from it:
+  `python server/prepare_configs.py --gpus 1 --stage2-init exp/stage0/latest.pt`
+- **pos0 → 0 even with play data** → the pathway is dead for a deeper reason
+  (action convention, labels). Stop and send the log.
+- OOM → `--s0-batch 8`. Smoke first if unsure: `prepare_configs.py --smoke`, then run_stage0.sh.
+
 ## 9. Recover the evaluation scenes  (~15 min)
 
 Rebuilds the deleted `rng_state.pkl` for each held-out episode from the seed
