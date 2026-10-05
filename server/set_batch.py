@@ -33,16 +33,17 @@ import yaml
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CFGS = {
+    0: "configs/train/vjepa_2_1_ac.yaml",
     1: "configs/train/vjepa_2_1_dreamer_predictor.yaml",
     2: "configs/train/vjepa_2_1_dreamer_ac.yaml",
 }
-PAPER_GLOBAL = {1: 128, 2: 16}
+PAPER_GLOBAL = {0: 128, 1: 128, 2: 16}
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--batch", type=int, required=True, help="per-GPU micro-batch")
-    p.add_argument("--stage", type=int, default=1, choices=(1, 2))
+    p.add_argument("--stage", type=int, default=1, choices=(0, 1, 2))
     p.add_argument("--gpus", type=int, default=1)
     p.add_argument("--global-batch", type=int, default=None,
                    help="override the paper's global batch (rarely correct)")
@@ -62,12 +63,12 @@ def main():
         # irrelevant and divisibility into 128 must not block the measurement.
         # This is how you measure batch sizes like 48 that do not divide 128.
         accum = 1
-    elif args.stage == 2:
-        # app/vjepa_2_1_dreamer_ac/train.py is untouched upstream and has NO
+    elif args.stage in (0, 2):
+        # Neither the stage 0 trainer (app/vjepa_2_1_ac) nor stage 2's has
         # accumulation support, so global batch is batch x world_size, full stop.
         accum = 1
         if per_step != target:
-            print(f"NOTE: stage 2 has no accum_steps; global batch is {per_step}, "
+            print(f"NOTE: stage {args.stage} has no accum_steps; global batch is {per_step}, "
                   f"not the paper's {target}.")
     else:
         accum, rem = divmod(target, per_step)
@@ -104,7 +105,11 @@ def main():
     # number of paired EPISODES and the loader uses drop_last=True, so too few
     # pairs gives len(loader)==0 and a silent infinite hang.
     root = c["data"]["dataset"]
-    if os.path.isdir(root):
+    if os.path.isdir(root) and args.stage == 0:
+        # data/stage0/<task>_{paired,play} -> franka dirs: count every episode
+        pairs = sum(len([f for f in fs if f.endswith((".hdf5", ".h5"))])
+                    for _, _, fs in os.walk(root, followlinks=True))
+    elif os.path.isdir(root):
         pairs = sum(len([f for f in os.listdir(os.path.join(root, t, "franka"))
                          if f.endswith((".hdf5", ".h5"))])
                     for t in os.listdir(root)

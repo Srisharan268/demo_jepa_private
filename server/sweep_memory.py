@@ -39,6 +39,7 @@ import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CFGS = {
+    0: "configs/train/vjepa_2_1_ac.yaml",
     1: "configs/train/vjepa_2_1_dreamer_predictor.yaml",
     2: "configs/train/vjepa_2_1_dreamer_ac.yaml",
 }
