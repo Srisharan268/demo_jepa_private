@@ -13,8 +13,13 @@
 # Blackwell cards (RTX 5090 etc., sm_120) need CUDA >= 12.8 and torch >= 2.7.
 # If this tag is unavailable, any nvidia/cuda 12.8+ ubuntu22.04 runtime tag works:
 #   docker build --build-arg BASE=<tag> ...
+# Older driver (nvidia-smi "CUDA Version" < 12.8, e.g. an A6000 box on driver
+# 535/550)? Ampere needs no 12.8 -- build against 12.4 instead:
+#   docker build --build-arg BASE=nvidia/cuda:12.4.1-runtime-ubuntu22.04
+#                --build-arg TORCH_CUDA=cu124 -f docker/Dockerfile -t demojepa .
 ARG BASE=nvidia/cuda:12.8.1-runtime-ubuntu22.04
 FROM ${BASE}
+ARG TORCH_CUDA=cu128
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -30,7 +35,7 @@ ENV PATH=/opt/conda/bin:$PATH
 COPY requirements.txt /tmp/requirements.txt
 RUN conda create -n djepa python=3.12 -y \
     && /opt/conda/envs/djepa/bin/pip install --no-cache-dir torch torchvision \
-         --index-url https://download.pytorch.org/whl/cu128 \
+         --index-url https://download.pytorch.org/whl/${TORCH_CUDA} \
     && /opt/conda/envs/djepa/bin/pip install --no-cache-dir -r /tmp/requirements.txt
 
 # ---- simulator env: the SAME script used on a bare host --------------------
