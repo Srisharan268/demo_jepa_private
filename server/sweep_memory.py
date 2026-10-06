@@ -80,10 +80,19 @@ def run_one(stage, batch, ipe, env):
 
     # Override ipe: --measure sets 50, but 10 steps is enough to pass Adam's
     # lazy state allocation and reach peak.
+    import shutil
     import yaml
     p = os.path.join(REPO, rel)
     c = yaml.safe_load(open(p))
     c["optimization"]["ipe"] = ipe
+    # A fresh, empty output folder per measurement. Every trainer resumes from
+    # <folder>/latest.pt if it exists, so in the real exp/stageN/ a leftover
+    # checkpoint (e.g. from a smoke run, already at its last epoch) makes the
+    # run "resume", find nothing to do and exit -- measuring nothing.
+    folder = os.path.join(REPO, "exp", "_sweep", f"s{stage}_b{batch}")
+    shutil.rmtree(folder, ignore_errors=True)
+    c["folder"] = folder
+    c["meta"]["resume_checkpoint"] = None
     yaml.safe_dump(c, open(p, "w"), sort_keys=False)
 
     log_path = os.path.join(REPO, f"sweep_s{stage}_b{batch}.log")
@@ -101,7 +110,10 @@ def run_one(stage, batch, ipe, env):
         stop.set()
         t.join(timeout=3)
 
+    shutil.rmtree(folder, ignore_errors=True)   # its checkpoint is 5-13 GB of nothing
     text = open(log_path, errors="replace").read()
+    if "RESUMING" in text:
+        return {"error": "resumed from an old checkpoint instead of measuring", "log": log_path}
     if "OutOfMemoryError" in text or "CUDA out of memory" in text:
         return {"oom": True, "nvidia_smi": smi.get("peak"), "log": log_path}
     if rc != 0:
