@@ -88,6 +88,11 @@ def main():
     # rollout's CEM exploited that -- rotation pinned at +/-maxnorm, mm moves.
     p.add_argument("--with-rot", action="store_true",
                    help="also plan rotation (mpc.use_rpy true; upstream behaviour)")
+    # The gripper is untested in the model (action_test keeps it at the true
+    # value), and the oracle rollouts' CEM flipped it every step while the demo
+    # keeps it open until just before the press.
+    p.add_argument("--gripper", choices=("plan", "open", "closed"), default="plan",
+                   help="plan: CEM chooses it; open/closed: held fixed")
     args = p.parse_args()
 
     task, reference_h5 = pick_reference(args.task, args.camera)
@@ -155,6 +160,7 @@ def main():
     if args.l1_threshold is not None:
         c["deploy"]["l1_threshold"] = args.l1_threshold
     c["deploy"]["mpc"]["use_rpy"] = bool(args.with_rot)
+    c["deploy"]["mpc"]["fixed_gripper"] = {"plan": None, "open": 1.0, "closed": 0.0}[args.gripper]
 
     yaml.safe_dump(c, open(path, "w"), sort_keys=False)
 
@@ -170,7 +176,8 @@ def main():
     print(f"  max_steps      {args.max_steps}")
     print(f"  maxnorm        {c['deploy']['mpc']['maxnorm']}   "
           f"l1_threshold {c['deploy']['l1_threshold']}   "
-          f"rotation {'PLANNED' if c['deploy']['mpc']['use_rpy'] else 'held at 0'}")
+          f"rotation {'PLANNED' if c['deploy']['mpc']['use_rpy'] else 'held at 0'}   "
+          f"gripper {args.gripper}")
     print(f"  frame_skip     {src_fps} Hz // {plan_fps} fps = {src_fps // plan_fps} raw "
           f"frames = one training action")
     print(f"\nReference demo is held-out ({REFERENCE_ROBOT}); the policy drives the")

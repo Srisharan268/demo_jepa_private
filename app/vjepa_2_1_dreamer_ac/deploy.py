@@ -357,6 +357,10 @@ def build_mpc_args(deploy_cfg: dict) -> dict:
         # False: CEM plans position + gripper only, rotation held at 0 (cem()
         # zero-fills the rpy channels). Upstream always sampled rotation.
         "use_rpy": bool(mpc_cfg.get("use_rpy", True)),
+        # None: CEM plans the gripper. A number (1.0 open, 0.0 closed): held
+        # there, not sampled -- cem()'s fixed_gripper.
+        "fixed_gripper": (None if mpc_cfg.get("fixed_gripper") is None
+                          else float(mpc_cfg["fixed_gripper"])),
     }
 
 

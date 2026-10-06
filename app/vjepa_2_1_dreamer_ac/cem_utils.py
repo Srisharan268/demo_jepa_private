@@ -610,6 +610,9 @@ class WorldModel(object):
         mpc_kwargs.pop("only_xyz", None)
         mpc_kwargs.pop("gt_rpy_action", None)
         mpc_kwargs.pop("gt_gripper_action", None)
+        if self.discrete_gripper:
+            # the discrete branch passes fixed_gripper=0/1 itself
+            mpc_kwargs.pop("fixed_gripper", None)
 
         only_xyz_kwargs = {}
         if self.only_xyz:
@@ -692,6 +695,9 @@ class WorldModel(object):
         mpc_kwargs.pop("only_xyz", None)
         mpc_kwargs.pop("gt_rpy_action", None)
         mpc_kwargs.pop("gt_gripper_action", None)
+        if self.discrete_gripper:
+            # the discrete branch passes fixed_gripper=0/1 itself
+            mpc_kwargs.pop("fixed_gripper", None)
 
         only_xyz_kwargs = {}
         if self.only_xyz:
