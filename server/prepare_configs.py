@@ -84,6 +84,9 @@ _ap.add_argument("--causal", action="store_true",
 _ap.add_argument("--s1-accum", type=int, default=None,
                  help="stage 1 gradient accumulation (default: reach the paper's "
                       "global batch 128). Fewer = more optimizer steps per hour.")
+_ap.add_argument("--workers", type=int, default=8,
+                 help="dataloader processes per GPU (CPU-side decode); raise if "
+                      "the log's [data: ms] rivals [gpu: ms]")
 _ap.add_argument("--smoke", action="store_true",
                  help="tiny plumbing run: batch 1, accum 1, epochs 1, ipe 20")
 ARGS = _ap.parse_args()
@@ -113,7 +116,10 @@ if not os.path.exists(STAGE0_CKPT):
         STAGE0_CKPT = _home
 
 CAMERA = "right_shoulder_rgb"
-NUM_WORKERS = 8          # per rank; 4 ranks => 32 loader processes. Lower if host RAM is tight.
+# Loader processes per rank. Each sample decompresses and resizes a window of
+# 640x480 frames from gzip HDF5 on the CPU; at 8 workers stage 0 (batch 16)
+# waited ~2 s/step for data against ~2.75 s of GPU work. --workers to raise.
+NUM_WORKERS = ARGS.workers
 
 # Number of GPUs actually available. Override with --gpus N.
 # NOTE: this drives the arithmetic here AND the --devices list the run scripts
