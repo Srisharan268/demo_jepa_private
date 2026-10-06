@@ -96,11 +96,13 @@ def main():
                    help="Optional HDF5 demo file for side-by-side GIF")
     p.add_argument("--camera", default="right_shoulder_rgb",
                    help="Camera key inside the HDF5 (default: right_shoulder_rgb)")
-    p.add_argument("--out_dir", default=GIF_DIR,
-                   help=f"Output directory (default: server/GIFs/)")
+    p.add_argument("--out_dir", default=None,
+                   help="Output directory (default: <folder>/gifs, next to the run)")
     p.add_argument("--fps", type=int, default=8)
     p.add_argument("--size", type=int, default=256)
     args = p.parse_args()
+    if args.out_dir is None:
+        args.out_dir = os.path.join(args.folder, "gifs")
 
     folder = os.path.abspath(args.folder)
     if not os.path.isdir(folder):

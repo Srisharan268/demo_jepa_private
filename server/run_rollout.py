@@ -318,7 +318,9 @@ def main():
                    help="0 = one rollout per recovered scene (the usual case)")
     p.add_argument("--task", type=str, required=True)
     p.add_argument("--robot", type=str, default="panda", help="target embodiment")
-    p.add_argument("--out", type=str, default=os.path.join(REPO, "rollouts"))
+    p.add_argument("--out", type=str, default=None,
+                   help="run name -> rollouts/<name>/ (default: date_time). "
+                        "An absolute path is used as-is.")
     p.add_argument("--scenes", type=str, default=os.path.join(REPO, "data", "scenes"),
                    help="output of server/recover_rng.py")
     p.add_argument("--val-root", type=str, default=os.path.join(REPO, "data", "val"),
@@ -326,9 +328,12 @@ def main():
     p.add_argument("--timeout", type=int, default=180, help="seconds to wait for CoppeliaSim")
     p.add_argument("--fresh", action="store_true", help="wipe --out first")
     args = p.parse_args()
-    # server.py runs with cwd=scripts/rlbench_tools: a relative --out would put
-    # its frames there while this script counts frames under the repo -> "0 frames".
-    args.out = os.path.abspath(args.out)
+    # Every run gets its own folder under <repo>/rollouts/ holding frames, logs,
+    # configs and results. Always absolute: server.py runs with
+    # cwd=scripts/rlbench_tools, so a relative path would put its frames there
+    # while this script counted an empty folder ("0 frames").
+    name = args.out or time.strftime("%Y-%m-%d_%H%M")
+    args.out = name if os.path.isabs(name) else os.path.join(REPO, "rollouts", name)
     args.scenes = os.path.abspath(args.scenes)
     args.val_root = os.path.abspath(args.val_root)
 
