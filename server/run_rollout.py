@@ -34,7 +34,23 @@ COPPELIASIM_ROOT = os.environ.get("COPPELIASIM_ROOT", "/opt/CoppeliaSim")
 DISPLAY = os.environ.get("SIM_DISPLAY", ":99")
 
 DEPLOY_CFG = "configs/inference/deploy_vjepa_2_1.yaml"
-PORT = 9001
+
+
+def _pick_port():
+    """DJEPA_SIM_PORT if set, else a port the OS reports free right now.
+
+    Was hardcoded to 9001 -- on a shared machine something else held it, and
+    every episode died at startup with 'Address already in use'.
+    """
+    if os.environ.get("DJEPA_SIM_PORT"):
+        return int(os.environ["DJEPA_SIM_PORT"])
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+PORT = _pick_port()   # one port per run_rollout invocation; deploy is told it per episode
 
 
 def sim_env():
@@ -126,10 +142,11 @@ def kill_stale(timeout=60):
     loop the server restarts 40 times, so this fires repeatedly.
     """
     # run_episode launches `server.py` bare with cwd=scripts/rlbench_tools, so
-    # the process line never contains "rlbench_tools/server.py" -- the old
-    # pattern could not kill this script's own stale servers. Match on the port
-    # instead: specific to this tool, so it cannot hit anyone else's jobs.
-    subprocess.run(f"pkill -f coppeliaSim; pkill -f 'server.py --host 127.0.0.1 --port {PORT}'",
+    # the process line never contains "rlbench_tools/server.py". Match OUR
+    # server on OUR port only. No `pkill -f coppeliaSim`: PyRep runs CoppeliaSim
+    # inside server.py, so that pattern never matched our servers -- only other
+    # people's simulators on this (shared) account.
+    subprocess.run(f"pkill -f 'server.py --host 127.0.0.1 --port {PORT} '",
                    shell=True, stderr=subprocess.DEVNULL)
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -189,6 +206,7 @@ def write_episode_config(ep, reference_h5, out_dir, goal_mode):
     c = yaml.safe_load(open(os.path.join(REPO, DEPLOY_CFG)))
     c["deploy"]["reference_h5"] = reference_h5
     c["deploy"]["goal_mode"] = goal_mode
+    c["deploy"]["server_port"] = PORT        # the port this run's server listens on
     path = os.path.join(out_dir, f"deploy_ep{ep}.yaml")
     with open(path, "w") as f:
         yaml.safe_dump(c, f, sort_keys=False)
