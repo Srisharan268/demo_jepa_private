@@ -87,6 +87,10 @@ _ap.add_argument("--s1-accum", type=int, default=None,
 _ap.add_argument("--workers", type=int, default=8,
                  help="dataloader processes per GPU (CPU-side decode); raise if "
                       "the log's [data: ms] rivals [gpu: ms]")
+_ap.add_argument("--s1-offset", type=int, default=None,
+                 help="stage 1 frames between current and target (default: the "
+                      "deploy stride, ceil(data_fps/5) = 4 at 20 Hz). 0 = upstream: "
+                      "uniformly anywhere later in the episode")
 _ap.add_argument("--smoke", action="store_true",
                  help="tiny plumbing run: batch 1, accum 1, epochs 1, ipe 20")
 ARGS = _ap.parse_args()
@@ -300,6 +304,19 @@ else:
     apply_schedule_overrides(c)
 c["meta"]["pretrain_checkpoint"] = STAGE0_CKPT
 c["meta"]["dreamer_predictor_checkpoint"] = None
+# Paper Sec. 3.1 / Alg. 2: the source pair is (k, k+n) with n "aligned with the
+# planning frequency" -- the stride deploy steps through the demo with (ref frame
+# i -> goal frame i+n). Upstream's loader drew the target uniformly from the
+# whole remaining episode instead (typical jump 20-40 frames vs deploy's 4).
+# Derived the way deploy derives it: ceil(capture rate / planning fps).
+_s1_src = ARGS.source_fps or source_fps(DATASET)
+if ARGS.s1_offset is not None:
+    S1_OFFSET = ARGS.s1_offset
+elif _s1_src:
+    S1_OFFSET = -(-_s1_src // 5)          # planning fps 5 (paper Table 9; checked for stage 2 below)
+else:
+    sys.exit("ERROR: cannot read the capture rate for stage 1's target offset; pass --source-fps")
+c["data"]["target_offset"] = S1_OFFSET
 save(S1, c)
 
 # ---------------------------------------------------------------- Stage 2 ---
@@ -419,6 +436,8 @@ if sum(S0_COUNTS.values()) < z["data"]["batch_size"]:
     print(f"      *** FATAL: fewer stage 0 episodes than batch_size -- training would hang.")
     FATAL.append("stage 0")
 report("stage 1", c, S1_ACCUM)
+print(f"      target offset          {S1_OFFSET} frames "
+      f"({'upstream: uniform future' if S1_OFFSET == 0 else 'fixed, = deploy stride'})")
 report("stage 2", d, 1)
 print()
 print("  stages 0/2 training mode: "

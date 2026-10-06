@@ -112,6 +112,7 @@ def main(args, resume_preempt=False):
     camera_views = cfgs_data.get("camera_views")
     data_type = cfgs_data.get("data_type", "real")
     variance_step = cfgs_data.get("variance_step", 0)
+    target_offset = int(cfgs_data.get("target_offset", 0))   # 0 = upstream uniform future target
     # Held-out split for validation. Absent from upstream configs, so absent =>
     # no validation and behaviour is exactly as before.
     val_dataset = cfgs_data.get("val_dataset", None)
@@ -268,6 +269,7 @@ def main(args, resume_preempt=False):
         pin_mem=pin_mem,
         data_type=data_type,
         variance_step=variance_step,
+        target_offset=target_offset,
     )
     # -- held-out loader for validation. `val_dataset` defaults to None, so this
     # is inert unless the config sets it: upstream behaviour is unchanged.
@@ -287,6 +289,7 @@ def main(args, resume_preempt=False):
             pin_mem=pin_mem,
             data_type=data_type,
             variance_step=variance_step,
+            target_offset=target_offset,
             drop_last=False,
         )
         logger.info(f"validation loader: {val_dataset} ({len(val_loader)} batches)")

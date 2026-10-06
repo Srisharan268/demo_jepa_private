@@ -54,6 +54,7 @@ def init_data(
     camera_frame=False,
     random_erase_clip=False,
     variance_step=0,
+    target_offset=0,
 ):
     """Training loader for dreamer predictor paired-frame sampling.
 
@@ -65,6 +66,11 @@ def init_data(
     and for presets that default to 5 Hz. For ``sim``, default is always 30 Hz and yaml ``data_fps`` is ignored.
 
     ``variance_step``: optional override of variance step for reference frame selection.
+
+    ``target_offset``: frames between the current and target frame. 0 = upstream:
+    target drawn uniformly from the rest of the episode. > 0 = the paper's fixed
+    offset n "aligned with the planning frequency" (Sec. 3.1, Alg. 2) -- the same
+    stride deploy uses between reference frame i and its goal frame i+n.
     """
 
 
@@ -83,13 +89,16 @@ def init_data(
         primary_subdir=preset["primary_subdir"],
         reference_subdir=preset["reference_subdir"],
         variance_step=variance_step,
+        target_offset=target_offset,
     )
     logger.info(
-        "dreamer_predictor init_data: data_type=%s primary=%s reference=%s variance_step=%r",
+        "dreamer_predictor init_data: data_type=%s primary=%s reference=%s variance_step=%r "
+        "target_offset=%r",
         data_type,
         preset["primary_subdir"],
         preset["reference_subdir"],
         variance_step,
+        target_offset,
     )
 
     dist_sampler = torch.utils.data.distributed.DistributedSampler(
@@ -135,6 +144,7 @@ class UnifiedDreamerPredictorPairDataset(torch.utils.data.Dataset):
         primary_subdir="franka",
         reference_subdir="sawyer",
         variance_step=0,
+        target_offset=0,
     ):
         self.dataset = dataset
         self.camera_views = camera_views if isinstance(camera_views, (list, tuple)) else [camera_views]
@@ -142,6 +152,7 @@ class UnifiedDreamerPredictorPairDataset(torch.utils.data.Dataset):
         self.camera_frame = camera_frame
         self.random_erase_clip = random_erase_clip
         self.variance_step = variance_step
+        self.target_offset = int(target_offset)
 
         self.all_paired_episodes = []
         for task in os.listdir(dataset):
@@ -175,7 +186,14 @@ class UnifiedDreamerPredictorPairDataset(torch.utils.data.Dataset):
                 if episode_len < 2:
                     raise ValueError(f"Episode length {episode_len} is less than 2 (min for sample)")
                 max_idx = episode_len - 1
-                if max_idx == 0:
+                if self.target_offset > 0:
+                    # Paper: fixed offset n, the planning stride deploy uses.
+                    if episode_len <= self.target_offset:
+                        raise ValueError(f"Episode length {episode_len} <= target_offset "
+                                         f"{self.target_offset}")
+                    current_idx = np.random.randint(0, episode_len - self.target_offset)
+                    target_idx = current_idx + self.target_offset
+                elif max_idx == 0:
                     current_idx = 0
                     target_idx = 0
                 else:
