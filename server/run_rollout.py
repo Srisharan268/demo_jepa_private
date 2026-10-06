@@ -326,6 +326,11 @@ def main():
     p.add_argument("--timeout", type=int, default=180, help="seconds to wait for CoppeliaSim")
     p.add_argument("--fresh", action="store_true", help="wipe --out first")
     args = p.parse_args()
+    # server.py runs with cwd=scripts/rlbench_tools: a relative --out would put
+    # its frames there while this script counts frames under the repo -> "0 frames".
+    args.out = os.path.abspath(args.out)
+    args.scenes = os.path.abspath(args.scenes)
+    args.val_root = os.path.abspath(args.val_root)
 
     if args.fresh and os.path.isdir(args.out):
         shutil.rmtree(args.out)
