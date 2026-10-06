@@ -23,4 +23,4 @@ nvidia-smi --query-gpu=index,name,memory.total --format=csv
 
 exec python -m app.main \
     --fname configs/train/vjepa_2_1_dreamer_predictor.yaml \
-    --devices cuda:0
+    --devices "cuda:${DJEPA_GPU:-0}"

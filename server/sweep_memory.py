@@ -90,7 +90,7 @@ def run_one(stage, batch, ipe, env):
     with open(log_path, "w") as log:
         proc = subprocess.Popen(
             [sys.executable, "-m", "app.main", "--fname", rel,
-             "--devices", "cuda:0", "--debugmode", "True"],
+             "--devices", f"cuda:{os.environ.get('DJEPA_GPU', '0')}", "--debugmode", "True"],
             cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT,
         )
         smi = {}
@@ -151,7 +151,9 @@ def main():
         """Total VRAM held by ANY compute process. Must be ~0 between configs."""
         try:
             r = subprocess.run(
-                ["nvidia-smi", "--query-compute-apps=used_memory",
+                # Only OUR GPU: on a shared box other users' jobs live on the others.
+                ["nvidia-smi", "-i", os.environ.get("DJEPA_GPU", "0"),
+                 "--query-compute-apps=used_memory",
                  "--format=csv,noheader,nounits"],
                 capture_output=True, text=True, timeout=10)
             return sum(int(x) for x in r.stdout.split() if x.strip().isdigit())

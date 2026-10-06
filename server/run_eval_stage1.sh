@@ -62,4 +62,4 @@ if pairs < 16:
 PY
 
 exec python -m app.vjepa_2_1_dreamer_predictor.retrieval_eval \
-    --fname "$EVAL_CFG" --devices cuda:0 --debugmode True
+    --fname "$EVAL_CFG" --devices "cuda:${DJEPA_GPU:-0}" --debugmode True

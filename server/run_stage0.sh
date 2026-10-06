@@ -29,4 +29,4 @@ echo "stage 0 data: $DATA"
 
 exec python -m app.main \
     --fname configs/train/vjepa_2_1_ac.yaml \
-    --devices cuda:0
+    --devices "cuda:${DJEPA_GPU:-0}"
