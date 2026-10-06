@@ -266,10 +266,17 @@ def run_episode(ep, scene, args):
               flush=True)
     except Exception as _e:
         print(f"  running policy (could not read mpc from {ep_cfg}: {_e})", flush=True)
-    proc = subprocess.run(
-        [sys.executable, "-m", "app.vjepa_2_1_dreamer_ac.deploy", "--fname", ep_cfg],
-        cwd=REPO, env=torch_env(), capture_output=True, text=True,
-    )
+    # Streamed straight to the log (unbuffered), so a running episode can be
+    # watched with `tail -f` -- capturing it only wrote the log at the end.
+    # deploy.py prints the chosen action and `latent l1 dist` every step: the
+    # only record of whether the planner saturates and whether l1_threshold
+    # gates. A successful-looking run is unjudgeable without it.
+    err_log = os.path.join(args.out, f"deploy_ep{ep}.log")
+    with open(err_log, "w", errors="replace") as _log:
+        proc = subprocess.run(
+            [sys.executable, "-u", "-m", "app.vjepa_2_1_dreamer_ac.deploy", "--fname", ep_cfg],
+            cwd=REPO, env=torch_env(), stdout=_log, stderr=subprocess.STDOUT, text=True,
+        )
 
     srv.terminate()
     try:
@@ -293,25 +300,11 @@ def run_episode(ep, scene, args):
         if f.lower().endswith((".png", ".jpg"))
     )
 
-    # Always written, not only on crash. deploy.py prints the chosen action and
-    # `latent l1 dist` every step -- the only record of whether the planner
-    # saturates and whether l1_threshold gates. A successful-looking run is
-    # unjudgeable without it.
-    err_log = os.path.join(args.out, f"deploy_ep{ep}.log")
-    with open(err_log, "w", errors="replace") as f:
-        f.write("===== STDOUT =====\n" + (proc.stdout or "")
-                + "\n===== STDERR =====\n" + (proc.stderr or ""))
-
     if proc.returncode != 0:
-        # stderr matters most: Python tracebacks go there, not to stdout, so
-        # printing only stdout showed model-init logging and hid the exception.
-        err = "\n".join((proc.stderr or "").splitlines()[-25:])
-        out = "\n".join((proc.stdout or "").splitlines()[-8:])
+        # stdout and stderr share the log, so the traceback is at its end.
+        tail = "\n".join(open(err_log, errors="replace").read().splitlines()[-25:])
         print(f"  deploy.py exited {proc.returncode}", flush=True)
-        if err.strip():
-            print(f"  --- stderr (last 25) ---\n{err}", flush=True)
-        else:
-            print(f"  --- stdout (last 8, stderr empty) ---\n{out}", flush=True)
+        print(f"  --- last 25 lines ---\n{tail}", flush=True)
         print(f"  full output: {err_log}", flush=True)
 
     return success, n_frames
