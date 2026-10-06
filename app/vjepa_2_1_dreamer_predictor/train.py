@@ -442,6 +442,13 @@ def main(args, resume_preempt=False):
             return None
         dreamer_predictor.eval()
         tot, n = 0.0, 0
+        # copy: L1 of predicting the CURRENT franka frame -- "nothing moves".
+        # With a short target offset the next frame resembles the current one,
+        # so a lazy dreamer can score well by copying; val must beat this.
+        # shuf: the dreamer's L1 when every sample gets ANOTHER episode's sawyer
+        # frames. ~equal to val = the demo is ignored (single-task scenes can
+        # give the motion away); clearly worse = the dreamer uses the demo.
+        copy_tot, shuf_tot, n_shuf = 0.0, 0.0, 0
         preds, tgts = [], []
         with torch.no_grad():
             for i, sample in enumerate(val_loader):
@@ -455,13 +462,21 @@ def main(args, resume_preempt=False):
                     tr_feat = forward_feature_eval(encoder, tr)
                     out = dreamer_predictor(xt=c_feat, yt=cr_feat, yt_plus_1=tr_feat)
                     tot += float(F.l1_loss(out, t_feat, reduction="mean"))
+                    copy_tot += float(F.l1_loss(c_feat, t_feat, reduction="mean"))
+                    if c_feat.size(0) > 1:
+                        out_s = dreamer_predictor(xt=c_feat, yt=cr_feat.roll(1, 0),
+                                                  yt_plus_1=tr_feat.roll(1, 0))
+                        shuf_tot += float(F.l1_loss(out_s, t_feat, reduction="mean"))
+                        n_shuf += 1
                 # Mean-pool tokens -> one vector per sample, kept on CPU in fp32.
                 # (N, D) is tiny, so this costs nothing next to the forward pass.
                 preds.append(out.detach().float().mean(dim=1).cpu())
                 tgts.append(t_feat.detach().float().mean(dim=1).cpu())
                 n += 1
         dreamer_predictor.train()
-        return tot / max(n, 1), _retrieval(preds, tgts)
+        extra = {"copy": copy_tot / max(n, 1),
+                 "shuf": shuf_tot / n_shuf if n_shuf else float("nan")}
+        return tot / max(n, 1), _retrieval(preds, tgts), extra
 
     def _retrieval(preds, tgts):
         """Top-1/top-5 retrieval of the true target latent among all val targets.
@@ -738,11 +753,17 @@ def main(args, resume_preempt=False):
 
         # -- Validation
         if val_loader is not None and (epoch + 1) % val_freq == 0:
-            _vl, _ret = run_validation()
+            _vl, _ret, _ex = run_validation()
             logger.info("epoch %d  train %.4f  VAL %.4f  (chance ~1.13, zeros ~0.80)"
                         % (epoch + 1, loss_meter.avg, _vl))
+            logger.info("           copy-current baseline %.4f (VAL must be below)   "
+                        "shuffled-demo %.4f (above VAL = demo is used)"
+                        % (_ex["copy"], _ex["shuf"]))
             _wl = {"epoch": epoch + 1, "val_loss": _vl,
-                   "train_minus_val": loss_meter.avg - _vl}
+                   "train_minus_val": loss_meter.avg - _vl,
+                   "val_copy_baseline": _ex["copy"], "val_shuffled_demo": _ex["shuf"],
+                   "val_gain_over_copy": _ex["copy"] - _vl,
+                   "val_demo_use": _ex["shuf"] - _vl}
             if _ret:
                 logger.info("           retrieval top1 %.3f  top5 %.3f  "
                             "(chance %.3f, n=%d)"
