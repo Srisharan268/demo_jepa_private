@@ -82,9 +82,12 @@ def main():
                    help="override mpc.maxnorm (measure it: RUNBOOK_LAB step 6)")
     p.add_argument("--l1-threshold", type=float, default=None,
                    help="override deploy.l1_threshold (RUNBOOK_LAB step 11)")
-    p.add_argument("--no-rot", action="store_true",
-                   help="CEM plans position + gripper only; rotation held at 0 "
-                        "(mpc.use_rpy false)")
+    # Default: CEM plans position + gripper; rotation held at 0. Measured on
+    # stage 0 (action_test --vary): the model ranks position-only decoys at
+    # 0.73-0.92 top-1 but rotation-only decoys at chance, and the first oracle
+    # rollout's CEM exploited that -- rotation pinned at +/-maxnorm, mm moves.
+    p.add_argument("--with-rot", action="store_true",
+                   help="also plan rotation (mpc.use_rpy true; upstream behaviour)")
     args = p.parse_args()
 
     task, reference_h5 = pick_reference(args.task, args.camera)
@@ -151,7 +154,7 @@ def main():
         c["deploy"]["mpc"]["maxnorm"] = args.maxnorm
     if args.l1_threshold is not None:
         c["deploy"]["l1_threshold"] = args.l1_threshold
-    c["deploy"]["mpc"]["use_rpy"] = not args.no_rot
+    c["deploy"]["mpc"]["use_rpy"] = bool(args.with_rot)
 
     yaml.safe_dump(c, open(path, "w"), sort_keys=False)
 
@@ -166,7 +169,8 @@ def main():
     print(f"                   the paper. maxnorm: ours, sized to the data (not upstream's 0.1)")
     print(f"  max_steps      {args.max_steps}")
     print(f"  maxnorm        {c['deploy']['mpc']['maxnorm']}   "
-          f"l1_threshold {c['deploy']['l1_threshold']}")
+          f"l1_threshold {c['deploy']['l1_threshold']}   "
+          f"rotation {'PLANNED' if c['deploy']['mpc']['use_rpy'] else 'held at 0'}")
     print(f"  frame_skip     {src_fps} Hz // {plan_fps} fps = {src_fps // plan_fps} raw "
           f"frames = one training action")
     print(f"\nReference demo is held-out ({REFERENCE_ROBOT}); the policy drives the")
