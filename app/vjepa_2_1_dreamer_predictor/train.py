@@ -450,6 +450,12 @@ def main(args, resume_preempt=False):
         # give the motion away); clearly worse = the dreamer uses the demo.
         copy_tot, shuf_tot, n_shuf = 0.0, 0.0, 0
         preds, tgts = [], []
+        copy_preds, shuf_preds = [], []
+        # forward: per sample, is the goal closer to the TRUE FUTURE frame than
+        # to the CURRENT frame? Retrieval across ~30 different scenes can be won
+        # from the scene alone (copying scores ~100%); this cannot -- copying
+        # scores 0, a goal that looks ahead scores high.
+        fwd_hits, fwd_n = 0, 0
         with torch.no_grad():
             for i, sample in enumerate(val_loader):
                 if val_batches > 0 and i >= val_batches:
@@ -463,19 +469,29 @@ def main(args, resume_preempt=False):
                     out = dreamer_predictor(xt=c_feat, yt=cr_feat, yt_plus_1=tr_feat)
                     tot += float(F.l1_loss(out, t_feat, reduction="mean"))
                     copy_tot += float(F.l1_loss(c_feat, t_feat, reduction="mean"))
+                    d_fut = (out - t_feat).abs().float().mean(dim=(1, 2))
+                    d_now = (out - c_feat).abs().float().mean(dim=(1, 2))
+                    fwd_hits += int((d_fut < d_now).sum()); fwd_n += out.size(0)
+                    copy_preds.append(c_feat.detach().float().mean(dim=1).cpu())
                     if c_feat.size(0) > 1:
                         out_s = dreamer_predictor(xt=c_feat, yt=cr_feat.roll(1, 0),
                                                   yt_plus_1=tr_feat.roll(1, 0))
                         shuf_tot += float(F.l1_loss(out_s, t_feat, reduction="mean"))
                         n_shuf += 1
+                        shuf_preds.append(out_s.detach().float().mean(dim=1).cpu())
                 # Mean-pool tokens -> one vector per sample, kept on CPU in fp32.
                 # (N, D) is tiny, so this costs nothing next to the forward pass.
                 preds.append(out.detach().float().mean(dim=1).cpu())
                 tgts.append(t_feat.detach().float().mean(dim=1).cpu())
                 n += 1
         dreamer_predictor.train()
+        r_copy = _retrieval(copy_preds, tgts)
+        r_shuf = _retrieval(shuf_preds, tgts) if len(shuf_preds) == len(tgts) else None
         extra = {"copy": copy_tot / max(n, 1),
-                 "shuf": shuf_tot / n_shuf if n_shuf else float("nan")}
+                 "shuf": shuf_tot / n_shuf if n_shuf else float("nan"),
+                 "fwd": fwd_hits / max(fwd_n, 1),
+                 "copy_top1": r_copy["top1"] if r_copy else float("nan"),
+                 "shuf_top1": r_shuf["top1"] if r_shuf else float("nan")}
         return tot / max(n, 1), _retrieval(preds, tgts), extra
 
     def _retrieval(preds, tgts):
@@ -765,11 +781,18 @@ def main(args, resume_preempt=False):
                    "val_gain_over_copy": _ex["copy"] - _vl,
                    "val_demo_use": _ex["shuf"] - _vl}
             if _ret:
-                logger.info("           retrieval top1 %.3f  top5 %.3f  "
-                            "(chance %.3f, n=%d)"
-                            % (_ret["top1"], _ret["top5"], _ret["chance"], _ret["n"]))
+                logger.info("           retrieval top1 %.3f  top5 %.3f  (chance %.3f, n=%d)   "
+                            "copy-current top1 %.3f  shuffled-demo top1 %.3f"
+                            % (_ret["top1"], _ret["top5"], _ret["chance"], _ret["n"],
+                               _ex["copy_top1"], _ex["shuf_top1"]))
                 _wl.update({"val_top1": _ret["top1"], "val_top5": _ret["top5"],
-                            "val_chance": _ret["chance"]})
+                            "val_chance": _ret["chance"],
+                            "val_copy_top1": _ex["copy_top1"],
+                            "val_shuffled_top1": _ex["shuf_top1"]})
+            logger.info("           forward accuracy %.3f  (goal nearer the true +4 frame "
+                        "than the current one; copying = 0, ~0.5 = no direction)"
+                        % _ex["fwd"])
+            _wl["val_forward_acc"] = _ex["fwd"]
             wandb.log(_wl)
 
         # -- Save Checkpoint
