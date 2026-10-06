@@ -82,6 +82,9 @@ def main():
                    help="override mpc.maxnorm (measure it: RUNBOOK_LAB step 6)")
     p.add_argument("--l1-threshold", type=float, default=None,
                    help="override deploy.l1_threshold (RUNBOOK_LAB step 11)")
+    p.add_argument("--no-rot", action="store_true",
+                   help="CEM plans position + gripper only; rotation held at 0 "
+                        "(mpc.use_rpy false)")
     args = p.parse_args()
 
     task, reference_h5 = pick_reference(args.task, args.camera)
@@ -148,6 +151,7 @@ def main():
         c["deploy"]["mpc"]["maxnorm"] = args.maxnorm
     if args.l1_threshold is not None:
         c["deploy"]["l1_threshold"] = args.l1_threshold
+    c["deploy"]["mpc"]["use_rpy"] = not args.no_rot
 
     yaml.safe_dump(c, open(path, "w"), sort_keys=False)
 

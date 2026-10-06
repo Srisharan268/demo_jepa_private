@@ -250,7 +250,12 @@ def cem(
         gripper_channel = mean[..., -1:]
     else:
         gripper_channel = round_small_elements(mean[..., -1:], 0.25)
-    new_action = torch.cat([mean[..., :-1], gripper_channel], dim=-1)[None, :]
+    # With use_rpy=False the CEM distribution is [xyz, gripper] only; the
+    # executed action must still be 7-d [xyz, rpy, gripper], so put the zero
+    # rotation back (sample_action_traj zero-fills it the same way).
+    rpy = (torch.zeros(mean.size(0), 0, device=mean.device) if use_rpy
+           else torch.zeros(mean.size(0), 3, device=mean.device, dtype=mean.dtype))
+    new_action = torch.cat([mean[..., :3], rpy, mean[..., 3:-1], gripper_channel], dim=-1)[None, :]
 
     return new_action, best_loss
 

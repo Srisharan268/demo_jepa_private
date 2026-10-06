@@ -354,6 +354,9 @@ def build_mpc_args(deploy_cfg: dict) -> dict:
         "momentum_std": float(mpc_cfg.get("momentum_std", 0.75)),
         "maxnorm": float(mpc_cfg.get("maxnorm", 0.1)),
         "verbose": bool(mpc_cfg.get("verbose", True)),
+        # False: CEM plans position + gripper only, rotation held at 0 (cem()
+        # zero-fills the rpy channels). Upstream always sampled rotation.
+        "use_rpy": bool(mpc_cfg.get("use_rpy", True)),
     }
 
 

@@ -55,6 +55,10 @@ def main():
     p.add_argument("--maxnorm", type=float, default=0.05, help="= deploy mpc.maxnorm")
     p.add_argument("--camera", default="right_shoulder_rgb")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--vary", choices=("all", "xyz", "rot"), default="all",
+                   help="what the decoys change. all: position + rotation. xyz: ONLY "
+                        "position (rotation copied from the true action) -- does the "
+                        "model know where the arm goes? rot: only rotation.")
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
@@ -93,7 +97,7 @@ def main():
         sys.exit(f"no episodes under {args.data}")
     print(f"ckpt {args.ckpt}\ndata {args.data}: {len(ds)} episodes, "
           f"stride {-(-args.data_fps // int(d['fps']))} raw frames/action, "
-          f"{args.decoys + 1} candidates, horizon {args.horizon}\n")
+          f"{args.decoys + 1} candidates, horizon {args.horizon}, decoys vary: {args.vary}\n")
 
     def encode(imgs):                       # [C,T,H,W] -> [T, tpf, D], layer-normed
         c = imgs.permute(1, 0, 2, 3).unsqueeze(2).repeat(1, 1, tubelet, 1, 1)
@@ -131,6 +135,10 @@ def main():
             h = encode(imgs.to(dev))                                        # [H+1,tpf,D]
             dec = (torch.rand(args.decoys, acts.size(0), 7, device=dev) * 2 - 1) * args.maxnorm
             dec[..., 6] = acts[:, 6]                 # same gripper: rank the MOTION
+            if args.vary == "xyz":                   # rotation can't give the answer away
+                dec[..., 3:6] = acts[:, 3:6]
+            elif args.vary == "rot":                 # position can't give it away
+                dec[..., :3] = acts[:, :3]
             cand = torch.cat([acts.unsqueeze(0), dec], 0)                   # true = index 0
             pred = rollout(h[0], states[0], cand)                           # [N,H,tpf,D]
             for H in top1:
