@@ -89,10 +89,14 @@ def main():
     p.add_argument("--with-rot", action="store_true",
                    help="also plan rotation (mpc.use_rpy true; upstream behaviour)")
     # The gripper is untested in the model (action_test keeps it at the true
-    # value), and the oracle rollouts' CEM flipped it every step while the demo
-    # keeps it open until just before the press.
-    p.add_argument("--gripper", choices=("plan", "open", "closed"), default="plan",
-                   help="plan: CEM chooses it; open/closed: held fixed")
+    # value), and the oracle rollouts' CEM flipped it every step. Default
+    # "closed": every push_button demo closes it ~7 cm above the button and
+    # presses with the closed fingertips (100% of 60 train demos checked); held
+    # open, the fingers can straddle the button instead of pressing it. The
+    # first oracle success was with "open" -- "closed" matches the demos, but
+    # compare both on the 30-scene run before trusting either.
+    p.add_argument("--gripper", choices=("plan", "open", "closed"), default="closed",
+                   help="closed (default) / open: held fixed; plan: CEM chooses it")
     args = p.parse_args()
 
     task, reference_h5 = pick_reference(args.task, args.camera)
