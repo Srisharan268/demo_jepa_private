@@ -504,11 +504,20 @@ class WorldModel(object):
         abs_gripper=True,
         discrete_gripper=False,
         only_xyz=False,
+        goal_mode="dreamer",
     ):
         super().__init__()
+        if goal_mode not in ("dreamer", "oracle"):
+            raise ValueError(f"goal_mode must be 'dreamer' or 'oracle', got {goal_mode!r}")
+        if goal_mode == "dreamer" and dreamer_predictor is None:
+            raise ValueError("goal_mode='dreamer' needs a dreamer_predictor")
+        #: "dreamer": goal = dreamer(current, ref_t, ref_t+1) from a source demo.
+        #: "oracle": goal = encode(ref_t+1) from a TARGET-embodiment demo (paper's
+        #: Oracle baseline); the dreamer is not used.
+        self.goal_mode = goal_mode
         self.encoder = encoder.to(device)
         self.predictor = predictor.to(device)
-        self.dreamer_predictor = dreamer_predictor.to(device)
+        self.dreamer_predictor = None if dreamer_predictor is None else dreamer_predictor.to(device)
         self.normalize_reps = normalize_reps
         self.transform = transform
         self.tokens_per_frame = tokens_per_frame
@@ -564,9 +573,12 @@ class WorldModel(object):
                 "(unless discrete_gripper=True, which fixes the gripper internally)."
             )
         current_rep = self.encode(current_img)
-        current_ref_rep = self.encode(current_ref)
-        target_ref_rep = self.encode(target_ref)
-        goal_rep = self.forward_dreamer_predictor(current_rep, current_ref_rep, target_ref_rep)
+        if self.goal_mode == "oracle":
+            goal_rep = self.encode(target_ref)
+        else:
+            current_ref_rep = self.encode(current_ref)
+            target_ref_rep = self.encode(target_ref)
+            goal_rep = self.forward_dreamer_predictor(current_rep, current_ref_rep, target_ref_rep)
         if target_img is not None:
             target_rep = self.encode(target_img)
             distance = F.l1_loss(target_rep.flatten(1), goal_rep.flatten(1))

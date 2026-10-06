@@ -141,10 +141,14 @@ def kill_stale(timeout=60):
     return False
 
 
-REFERENCE_ROBOT = "sawyer"   # embodiment providing the one-shot demo
+# Which recorded robot supplies the reference demo, per goal mode:
+#   dreamer -- the SOURCE embodiment (sawyer); the dreamer translates it. The method.
+#   oracle  -- the TARGET embodiment (franka) of the same scene; its frames ARE
+#              the goals. The paper's "V-JEPA 2.1 (Oracle)" baseline (Table 4).
+REFERENCE_ROBOT = {"dreamer": "sawyer", "oracle": "franka"}
 
 
-def discover_scenes(task, scenes_root, val_root):
+def discover_scenes(task, scenes_root, val_root, ref_robot):
     """Recovered scenes paired with the reference demo recorded IN that scene.
 
     Without this the simulator reset draws a fresh random scene while the demo
@@ -162,20 +166,20 @@ def discover_scenes(task, scenes_root, val_root):
         scene_dir = os.path.join(d, name)
         if not os.path.isfile(os.path.join(scene_dir, "rng_state.pkl")):
             continue
-        ref = os.path.join(val_root, task, REFERENCE_ROBOT, name + ".hdf5")
+        ref = os.path.join(val_root, task, ref_robot, name + ".hdf5")
         if not os.path.isfile(ref):
-            print(f"  WARNING: scene {name} has no {REFERENCE_ROBOT} demo "
+            print(f"  WARNING: scene {name} has no {ref_robot} demo "
                   f"({ref}); skipping", flush=True)
             continue
         scenes.append((name, scene_dir, ref))
 
     if not scenes:
         sys.exit(f"ERROR: {d} holds no usable scenes (need rng_state.pkl plus a "
-                 f"matching {REFERENCE_ROBOT} demo under {val_root})")
+                 f"matching {ref_robot} demo under {val_root})")
     return scenes
 
 
-def write_episode_config(ep, reference_h5, out_dir):
+def write_episode_config(ep, reference_h5, out_dir, goal_mode):
     """Per-episode copy of the deploy config, pointing at THIS episode's demo.
 
     Written per episode rather than mutating the committed config in place, so
@@ -184,6 +188,7 @@ def write_episode_config(ep, reference_h5, out_dir):
     import yaml
     c = yaml.safe_load(open(os.path.join(REPO, DEPLOY_CFG)))
     c["deploy"]["reference_h5"] = reference_h5
+    c["deploy"]["goal_mode"] = goal_mode
     path = os.path.join(out_dir, f"deploy_ep{ep}.yaml")
     with open(path, "w") as f:
         yaml.safe_dump(c, f, sort_keys=False)
@@ -250,7 +255,7 @@ def run_episode(ep, scene, args):
 
     # Report the MPC settings actually in the config, not a hardcoded guess --
     # a stale literal here makes a reduced-compute run look like a paper run.
-    ep_cfg = write_episode_config(ep, reference_h5, args.out)
+    ep_cfg = write_episode_config(ep, reference_h5, args.out, args.goal)
     try:
         import yaml
         _m = yaml.safe_load(open(ep_cfg))["deploy"]["mpc"]
@@ -327,6 +332,9 @@ def main():
                    help="holds the reference demos, one per scene")
     p.add_argument("--timeout", type=int, default=180, help="seconds to wait for CoppeliaSim")
     p.add_argument("--fresh", action="store_true", help="wipe --out first")
+    p.add_argument("--goal", choices=("dreamer", "oracle"), default="dreamer",
+                   help="dreamer: goals translated from the sawyer demo (the method); "
+                        "oracle: goals are the franka demo's own frames (paper's baseline)")
     args = p.parse_args()
     # Every run gets its own folder under <repo>/rollouts/ holding frames, logs,
     # configs and results. Always absolute: server.py runs with
@@ -345,7 +353,7 @@ def main():
         sys.exit(f"ERROR: PY_SIM not found: {PY_SIM}\n"
                  f"Set the PY_SIM environment variable to the rlbench env's python.")
 
-    scenes = discover_scenes(args.task, args.scenes, args.val_root)
+    scenes = discover_scenes(args.task, args.scenes, args.val_root, REFERENCE_ROBOT[args.goal])
     n = args.episodes if args.episodes > 0 else len(scenes)
     if n > len(scenes):
         # Reusing a scene would re-measure the same pairing and inflate the
@@ -354,7 +362,8 @@ def main():
               f"recovered; running {len(scenes)}.")
         n = len(scenes)
 
-    print(f"xvfb: {ensure_xvfb()}   task: {args.task}   episodes: {n}")
+    print(f"xvfb: {ensure_xvfb()}   task: {args.task}   episodes: {n}   "
+          f"goal: {args.goal} ({REFERENCE_ROBOT[args.goal]} demos)")
 
     results = []
     for ep in range(n):

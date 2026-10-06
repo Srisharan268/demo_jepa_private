@@ -367,6 +367,16 @@ def build_world_model(args: dict):
     pretrain_checkpoint = cfgs_meta.get("pretrain_checkpoint", None)
     dreamer_checkpoint = cfgs_meta.get("dreamer_predictor_checkpoint", None)
 
+    # goal_mode "dreamer": goal = dreamer(current obs, ref frame i, ref frame i+1),
+    #   the reference being a SOURCE-embodiment (sawyer) demo -- the method.
+    # goal_mode "oracle": goal = the encoded reference frame i+1 itself, the
+    #   reference being a TARGET-embodiment (franka) demo of the same scene --
+    #   the paper's "V-JEPA 2.1 (Oracle)" baseline (Table 4). No dreamer.
+    goal_mode = str(deploy_cfg.get("goal_mode", "dreamer"))
+    if goal_mode not in ("dreamer", "oracle"):
+        raise ValueError(f"deploy.goal_mode must be 'dreamer' or 'oracle', got {goal_mode!r}")
+    logger.info(f"goal_mode={goal_mode}")
+
     load_predictor = cfgs_meta.get("load_predictor", True)
     load_encoder = cfgs_meta.get("load_encoder", True)
     context_encoder_key = cfgs_meta.get("context_encoder_key", "encoder")
@@ -427,7 +437,7 @@ def build_world_model(args: dict):
 
     target_encoder = copy.deepcopy(encoder)
 
-    dreamer_predictor = init_dreamer_predictor(
+    dreamer_predictor = None if goal_mode == "oracle" else init_dreamer_predictor(
         uniform_power=uniform_power,
         use_mask_tokens=use_mask_tokens,
         zero_init_mask_tokens=zero_init_mask_tokens,
@@ -452,7 +462,8 @@ def build_world_model(args: dict):
         encoder.compile()
         predictor.compile()
         target_encoder.compile()
-        dreamer_predictor.compile()
+        if dreamer_predictor is not None:
+            dreamer_predictor.compile()
 
     transform = make_transforms(
         random_horizontal_flip=False,
@@ -483,17 +494,19 @@ def build_world_model(args: dict):
         replace_kw=["backbone.", "module."],
     )
 
-    logger.info("Loading dreamer checkpoint...")
-    dreamer_predictor = load_dreamer_predictor(
-        dreamer_predictor_path=dreamer_checkpoint,
-        dreamer_predictor=dreamer_predictor,
-        replace_kw=["backbone.", "module."],
-    )
+    if dreamer_predictor is not None:
+        logger.info("Loading dreamer checkpoint...")
+        dreamer_predictor = load_dreamer_predictor(
+            dreamer_predictor_path=dreamer_checkpoint,
+            dreamer_predictor=dreamer_predictor,
+            replace_kw=["backbone.", "module."],
+        )
 
     encoder = freeze_eval(encoder, dtype, device)
     predictor = freeze_eval(predictor, dtype, device)
     target_encoder = freeze_eval(target_encoder, dtype, device)
-    dreamer_predictor = freeze_eval(dreamer_predictor, dtype, device)
+    if dreamer_predictor is not None:
+        dreamer_predictor = freeze_eval(dreamer_predictor, dtype, device)
 
     tokens_per_frame = int((crop_size // encoder.patch_size) ** 2)
 
@@ -509,6 +522,7 @@ def build_world_model(args: dict):
         dtype=dtype,
         abs_gripper=bool(deploy_cfg.get("abs_gripper", True)),
         discrete_gripper=bool(deploy_cfg.get("discrete_gripper", False)),
+        goal_mode=goal_mode,
     )
 
     return world_model, dtype, mixed_precision

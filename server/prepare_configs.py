@@ -17,7 +17,8 @@ anneal, weight decay, losses -- is left exactly as upstream.
 Global batch arithmetic (paper ran 8 GPUs; we have 4):
 
   Stage 1   paper 16 x 8 = 128   ours 8 x 4 x accum 4 = 128
-  Stage 2   paper  2 x 8 =  16   ours 4 x 4            =  16
+  Stage 2   paper 16 x 8 = 128   (Table 12: 16 per GPU; upstream yaml ships 2)
+            ours  16 x 1 GPU, no accumulation support -> global 16
 
 Stage 1 cannot simply double to 32/GPU: measured activation cost is
 ~1.0-1.9 GB per sample (DreamerPredictor's Conv3dFusionNetwork is not
@@ -73,6 +74,16 @@ _ap.add_argument("--s0-batch", type=int, default=16, help="stage 0 per-GPU batch
 _ap.add_argument("--stage2-init", default=None,
                  help="AC world model stage 2 starts from; default Meta's repacked "
                       "checkpoint. After stage 0: exp/stage0/latest.pt")
+# Pair mode (src/utils/pairs.py) for stages 0 and 2: each 8-frame window is
+# encoded once and trained as 7 independent one-frame transitions -- deploy's
+# regime (1 frame of context, 1 step ahead). Upstream's frame-causal mode lets
+# 6/7 of the loss read the arm's velocity off earlier frames instead of the
+# action. --causal restores upstream.
+_ap.add_argument("--causal", action="store_true",
+                 help="stages 0/2: upstream frame-causal training instead of pair mode")
+_ap.add_argument("--s1-accum", type=int, default=None,
+                 help="stage 1 gradient accumulation (default: reach the paper's "
+                      "global batch 128). Fewer = more optimizer steps per hour.")
 _ap.add_argument("--smoke", action="store_true",
                  help="tiny plumbing run: batch 1, accum 1, epochs 1, ipe 20")
 ARGS = _ap.parse_args()
@@ -115,7 +126,7 @@ for _i, _a in enumerate(sys.argv):
 
 # Paper global batches, preserved wherever possible.
 PAPER_GLOBAL_S1 = 128    # 16 x 8 GPUs
-PAPER_GLOBAL_S2 = 16     # 2 x 8 GPUs
+PAPER_GLOBAL_S2 = 128    # paper Table 12: 16 per GPU x 8 GPUs
 
 # Stage 1's output, consumed by Stage 2. Written by the Stage 1 run.
 STAGE1_CKPT = os.path.join(OUT_STAGE1, "latest.pt")
@@ -268,7 +279,9 @@ S1_BATCH = 1 if ARGS.smoke else 8
 # Smoke uses accum 2, not 1: with n_micro == 1 the accumulation loop runs once,
 # no_sync() is never entered and the /n_micro scaling is a no-op -- the whole
 # custom code path would go untested. 2 exercises it for ~nothing.
-S1_ACCUM = 2 if ARGS.smoke else max(1, PAPER_GLOBAL_S1 // (S1_BATCH * N_GPUS))
+S1_ACCUM = (2 if ARGS.smoke else
+            ARGS.s1_accum if ARGS.s1_accum else
+            max(1, PAPER_GLOBAL_S1 // (S1_BATCH * N_GPUS)))
 c["data"]["batch_size"] = S1_BATCH
 c["data"]["num_workers"] = 2 if ARGS.smoke else NUM_WORKERS
 c["optimization"]["accum_steps"] = S1_ACCUM
@@ -307,7 +320,7 @@ d["data"]["data_fps"] = SRC_FPS
 # untouched), so global batch is batch_size x N_GPUS. On few GPUs the batch
 # needed to hit 16 may not fit; cap it and report the shortfall honestly.
 S2_BATCH_IDEAL = max(1, PAPER_GLOBAL_S2 // N_GPUS)
-S2_BATCH_CAP = 4                      # per-GPU memory ceiling for stage 2
+S2_BATCH_CAP = 16    # paper's per-GPU batch; pair mode makes it affordable. --s2-batch overrides
 S2_BATCH = (1 if ARGS.smoke else
             ARGS.s2_batch if ARGS.s2_batch else
             min(S2_BATCH_IDEAL, S2_BATCH_CAP))
@@ -325,6 +338,7 @@ else:
 d["meta"]["pretrain_checkpoint"] = ARGS.stage2_init or STAGE0_CKPT
 d["meta"]["dreamer_predictor_checkpoint"] = ARGS.stage1_ckpt or STAGE1_CKPT
 d["meta"]["load_predictor"] = True
+d["loss"]["pair_mode"] = not ARGS.causal
 save(S2, d)
 
 # ---------------------------------------------------------------- Stage 0 ---
@@ -370,6 +384,7 @@ z["meta"]["load_predictor"] = True        # fine-tune Meta's predictor, not from
 # ~13 GB per checkpoint (encoder + target encoder + predictor + optimiser):
 # keep latest.pt only. Upstream's 25 would keep e0.pt, an untrained copy.
 z["meta"]["save_every_freq"] = -1
+z["loss"]["pair_mode"] = not ARGS.causal
 if ARGS.smoke:
     z["optimization"].update(epochs=1, ipe=20, warmup=0, anneal=0)
 else:
@@ -399,6 +414,10 @@ if sum(S0_COUNTS.values()) < z["data"]["batch_size"]:
     FATAL.append("stage 0")
 report("stage 1", c, S1_ACCUM)
 report("stage 2", d, 1)
+print()
+print("  stages 0/2 training mode: "
+      + ("frame-causal (upstream)" if ARGS.causal else
+         "PAIR mode: 7 one-frame transitions per 8-frame window, no rollout loss"))
 if not ARGS.stage2_init:
     print("      (stage 2 starts from Meta's predictor; after stage 0 rerun with "
           "--stage2-init exp/stage0/latest.pt)")

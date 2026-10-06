@@ -40,6 +40,7 @@ from app.vjepa_2_1_ac.utils import (
 )
 from src.utils.distributed import init_distributed
 from src.utils.logging import AverageMeter, CSVLogger, get_logger, gpu_timer
+from src.utils.pairs import to_pairs
 from src.utils.single_gpu import wrap_ddp
 
 # import torch.distributed as dist
@@ -158,6 +159,11 @@ def main(args, resume_preempt=False):
     loss_exp = cfgs_loss.get("loss_exp")
     normalize_reps = cfgs_loss.get("normalize_reps")
     auto_steps = min(cfgs_loss.get("auto_steps", 1), max_num_frames)
+    # Pair mode (src/utils/pairs.py): train on the window's T-1 transitions as
+    # independent one-frame samples -- deploy's regime -- instead of
+    # frame-causal sequences. No autoregressive loss (deploy plans one step).
+    pair_mode = bool(cfgs_loss.get("pair_mode", False))
+    logger.info(f"pair_mode={pair_mode}")
     # --
     tokens_per_frame = int((crop_size // patch_size) ** 2)
 
@@ -504,20 +510,42 @@ def main(args, resume_preempt=False):
                     _h = h[:, tokens_per_frame : z.size(1) + tokens_per_frame]
                     return torch.mean(torch.abs(z - _h) ** loss_exp) / loss_exp
 
+                def pair_predict(ctx, a, s, e):
+                    z = predictor(ctx, a, s, e)
+                    if normalize_reps:
+                        z = F.layer_norm(z, (z.size(-1),))
+                    return z
+
                 # Step 1. Forward
                 with torch.cuda.amp.autocast(dtype=dtype, enabled=mixed_precision):
                     h = forward_target(clips)
-                    z_tf, z_ar = forward_predictions(h)
-                    jloss = loss_fn(z_tf, h)
-                    sloss = loss_fn(z_ar, h)
+                    if pair_mode:
+                        ctx, a_p, s_p, e_p, tgt = to_pairs(
+                            h, actions, states, extrinsics if use_extrinsics else None,
+                            tokens_per_frame)
+                        z_p = pair_predict(ctx, a_p, s_p, e_p)
+                        jloss = torch.mean(torch.abs(z_p - tgt) ** loss_exp) / loss_exp
+                        sloss = torch.zeros_like(jloss)
+                    else:
+                        z_tf, z_ar = forward_predictions(h)
+                        jloss = loss_fn(z_tf, h)
+                        sloss = loss_fn(z_ar, h)
                     loss = jloss + sloss
 
                     # -- ACTION RESPONSE, identical to stage 2's: flip the pose
                     # actions, measure how far the prediction moves, in frames
                     # of real latent change. pos0 (one frame of context) is the
                     # regime the planner uses. This is the stage 0 go/no-go.
+                    # In pair mode every sample IS that regime, so pos0 == all.
                     act_resp0 = act_resp = float("nan")
-                    if itr % log_freq == 0:
+                    if itr % log_freq == 0 and pair_mode:
+                        with torch.no_grad():
+                            a_flip = a_p.clone()
+                            a_flip[..., :6] = -a_flip[..., :6]
+                            _d = (z_p.detach() - pair_predict(ctx, a_flip, s_p, e_p)).abs().mean()
+                            _frame = (tgt - ctx).abs().mean() + 1e-8
+                            act_resp0 = act_resp = float(_d / _frame)
+                    elif itr % log_freq == 0:
                         with torch.no_grad():
                             a_flip = actions.clone()
                             a_flip[..., :6] = -a_flip[..., :6]

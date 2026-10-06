@@ -25,6 +25,7 @@ import torch.multiprocessing as mp
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
+from src.utils.pairs import goals_to_pairs, to_pairs
 from src.utils.single_gpu import wrap_ddp
 
 from app.vjepa_2_1_dreamer_ac.dataset import init_data
@@ -158,6 +159,11 @@ def main(args, resume_preempt=False):
     loss_exp = cfgs_loss.get("loss_exp")
     normalize_reps = cfgs_loss.get("normalize_reps")
     auto_steps = min(cfgs_loss.get("auto_steps", 1), max_num_frames)
+    # Pair mode (src/utils/pairs.py): train on the window's T-1 transitions as
+    # independent one-frame samples -- deploy's regime -- each against its own
+    # dreamer goal. No autoregressive loss (deploy plans one step).
+    pair_mode = bool(cfgs_loss.get("pair_mode", False))
+    logger.info(f"pair_mode={pair_mode}")
     # --
     tokens_per_frame = int((crop_size // patch_size) ** 2)
 
@@ -572,9 +578,21 @@ def main(args, resume_preempt=False):
                         ref_feature[:, :-tokens_per_frame],
                         ref_feature[:, tokens_per_frame:],
                     )
-                    z_tf, z_ar = forward_predictions(h)
-                    jloss = loss_fn_dreamer(z_tf, dreamer_target_feature)
-                    sloss = loss_fn_dreamer(z_ar, dreamer_target_feature)
+                    if pair_mode:
+                        ctx, a_p, s_p, e_p, tgt = to_pairs(
+                            h, actions, states, extrinsics if use_extrinsics else None,
+                            tokens_per_frame)
+                        goal_p = goals_to_pairs(dreamer_target_feature, h.size(0),
+                                                ctx.size(0) // h.size(0), tokens_per_frame)
+                        z_p = predictor(ctx, a_p, s_p, e_p)
+                        if normalize_reps:
+                            z_p = F.layer_norm(z_p, (z_p.size(-1),))
+                        jloss = torch.mean(torch.abs(z_p - goal_p) ** loss_exp) / loss_exp
+                        sloss = torch.zeros_like(jloss)
+                    else:
+                        z_tf, z_ar = forward_predictions(h)
+                        jloss = loss_fn_dreamer(z_tf, dreamer_target_feature)
+                        sloss = loss_fn_dreamer(z_ar, dreamer_target_feature)
                     loss = jloss + sloss
 
                     # -- ACTION RESPONSE: does the prediction depend on the action?
@@ -588,7 +606,18 @@ def main(args, resume_preempt=False):
                     # alive. act_resp0 is position 0 -- one frame of context,
                     # exactly the regime the planner uses at deploy.
                     act_resp0 = act_resp = float("nan")
-                    if itr % log_freq == 0:
+                    if itr % log_freq == 0 and pair_mode:
+                        # Every pair IS the deploy regime, so pos0 == all.
+                        with torch.no_grad():
+                            a_flip = a_p.clone()
+                            a_flip[..., :6] = -a_flip[..., :6]
+                            z_flip = predictor(ctx, a_flip, s_p, e_p)
+                            if normalize_reps:
+                                z_flip = F.layer_norm(z_flip, (z_flip.size(-1),))
+                            _d = (z_p.detach() - z_flip).abs().mean()
+                            _frame = (tgt - ctx).abs().mean() + 1e-8
+                            act_resp0 = act_resp = float(_d / _frame)
+                    elif itr % log_freq == 0:
                         with torch.no_grad():
                             a_flip = actions.clone()
                             a_flip[..., :6] = -a_flip[..., :6]
