@@ -44,10 +44,12 @@ def main():
                    help="franka demo h5; default: first recovered scene's val demo")
     p.add_argument("--rollout", default=None, help="rollouts/<name>/epN to compare")
     p.add_argument("--stride", type=int, default=4, help="raw frames per goal step")
+    p.add_argument("--dreamer", action="store_true",
+                   help="calibrate for DREAMER goals (needs meta.dreamer_predictor_checkpoint)")
     args = p.parse_args()
 
     params = yaml.safe_load(open(os.path.join(REPO, args.fname)))
-    params["deploy"]["goal_mode"] = "oracle"          # encoder + predictor only
+    params["deploy"]["goal_mode"] = "dreamer" if args.dreamer else "oracle"
     wm, dtype, mixed = build_world_model(params)
 
     demo = args.demo
@@ -88,6 +90,32 @@ def main():
             print(f"\nrollout first saved view ({os.path.basename(pngs[0])}) vs demo frames 0..{len(near) - 1}:")
             print("  " + "  ".join(f"{k}:{v:.3f}" for v, k in sorted(near, key=lambda x: x[1])))
             print(f"  closest: demo frame {best[1]} at {best[0]:.4f}")
+
+    if args.dreamer:
+        # A dreamer goal is built FROM the current view: dreamer(franka t, sawyer
+        # t, sawyer t+n). fresh = view t to its goal (must stay ABOVE the
+        # threshold, or a new goal counts as reached before moving); reached =
+        # the demo's view n frames later to the same goal (should fall BELOW).
+        saw = demo.replace(os.sep + "franka" + os.sep, os.sep + "sawyer" + os.sep)
+        with h5py.File(saw, "r") as f:
+            simgs = np.asarray(f["observations/images/right_shoulder_rgb"])
+        zs = [enc(simgs[t]) for t in range(len(simgs))]
+        n = args.stride
+        fresh, reached = [], []
+        for t in range(0, min(T, len(zs)) - n):
+            with torch.no_grad(), torch.cuda.amp.autocast(dtype=dtype, enabled=mixed):
+                g = wm.forward_dreamer_predictor(z[t], zs[t], zs[t + n])
+            fresh.append(d(z[t], g))
+            reached.append(d(z[t + n], g))
+        fresh, reached = np.array(fresh), np.array(reached)
+        print(f"\nDREAMER goals along the demo ({len(fresh)} goals, sawyer {os.path.basename(saw)}):")
+        print(f"  fresh    d(view t,   goal)  median {np.median(fresh):.4f}  p10 {np.percentile(fresh, 10):.4f}  min {fresh.min():.4f}")
+        print(f"  reached  d(view t+{n}, goal)  median {np.median(reached):.4f}  p90 {np.percentile(reached, 90):.4f}  max {reached.max():.4f}")
+        print(f"  reached < fresh on {100 * np.mean(reached < fresh):.0f}% of goals")
+        lo_d, hi_d = np.median(reached), np.median(fresh)
+        print(f"\nDREAMER l1_threshold: above 'reached' (~{lo_d:.3f}) so it can advance, below "
+              f"'fresh' (~{hi_d:.3f}) so it must move first. Midpoint: {(lo_d + hi_d) / 2:.3f}")
+        return
 
     lo, hi = np.median(one), np.median(step)
     print(f"\nl1_threshold must sit ABOVE the near-identical floor (~{lo:.3f}) or the robot "
