@@ -343,6 +343,8 @@ def main():
                    help="holds the reference demos, one per scene")
     p.add_argument("--timeout", type=int, default=180, help="seconds to wait for CoppeliaSim")
     p.add_argument("--fresh", action="store_true", help="wipe --out first")
+    p.add_argument("--skip", nargs="*", default=[],
+                   help="scene names to leave out (e.g. the one deploy was calibrated on)")
     p.add_argument("--goal", choices=("dreamer", "oracle"), default="dreamer",
                    help="dreamer: goals translated from the sawyer demo (the method); "
                         "oracle: goals are the franka demo's own frames (paper's baseline)")
@@ -365,6 +367,14 @@ def main():
                  f"Set the PY_SIM environment variable to the rlbench env's python.")
 
     scenes = discover_scenes(args.task, args.scenes, args.val_root, REFERENCE_ROBOT[args.goal])
+    if args.skip:
+        # e.g. the scene deploy settings were calibrated on -- reporting it
+        # would score the evaluation on its own tuning data.
+        unknown = set(args.skip) - {name for name, _d, _r in scenes}
+        if unknown:
+            sys.exit(f"ERROR: --skip names no recovered scene: {sorted(unknown)}")
+        scenes = [s for s in scenes if s[0] not in set(args.skip)]
+        print(f"skipping {len(args.skip)} scene(s): {', '.join(args.skip)}")
     n = args.episodes if args.episodes > 0 else len(scenes)
     if n > len(scenes):
         # Reusing a scene would re-measure the same pairing and inflate the
