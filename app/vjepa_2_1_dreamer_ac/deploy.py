@@ -206,7 +206,13 @@ class ReferenceLoader:
         if self.img_data is None:
             raise RuntimeError("ReferenceLoader has not loaded any HDF5 file.")
 
-        current_idx = min(self.current_idx, self.length - 1)
+        # Clamp so the pair always spans a full step. Upstream let current_idx
+        # reach the last frame, giving the pair (last, last): to the dreamer,
+        # "the source does not move" -- a dreamer rollout that used up the demo
+        # then planned 80 steps toward motionless goals and sank into the table.
+        # Repeating the final real step (the press) keeps a direction. Oracle
+        # goals are unchanged: target_idx is still the last frame at the end.
+        current_idx = max(0, min(self.current_idx, self.length - 1 - self.frame_skip))
         target_idx = min(current_idx + self.frame_skip, self.length - 1)
 
         return current_idx, target_idx
